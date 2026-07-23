@@ -861,13 +861,9 @@ fn resolve_file_filter<'a>(
 /// Make a path relative to the project root if it's absolute,
 /// or resolve it from cwd if relative.
 fn make_relative(path: &Path, root: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.strip_prefix(root).unwrap_or(path).to_path_buf()
-    } else {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let abs = cwd.join(path);
-        abs.strip_prefix(root).unwrap_or(path).to_path_buf()
-    }
+    let abs = crate::util::path::absolute_normalize(path);
+    let root = crate::util::path::absolute_normalize(root);
+    abs.strip_prefix(&root).unwrap_or(&abs).to_path_buf()
 }
 
 #[cfg(test)]

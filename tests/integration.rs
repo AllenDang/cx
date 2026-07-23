@@ -435,6 +435,76 @@ fn overview_directory_root() {
 }
 
 #[test]
+fn overview_parent_path_switches_root_from_nested_repo() {
+    let dir = temp_project(&[
+        ("src/parent.rs", "pub fn parent_fn() {}\n"),
+        ("child/src/child.rs", "pub fn child_fn() {}\n"),
+    ]);
+    std::fs::create_dir(dir.path().join("child/.git")).unwrap();
+
+    let out = cx_in(&dir.path().join("child")).args(["overview", "../"]).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("src/"), "should show parent project src dir: {stdout}");
+    assert!(stdout.contains("child/"), "should show child dir under parent root: {stdout}");
+}
+
+#[test]
+fn explicit_root_accepts_relative_parent_overview_path() {
+    let dir = temp_project(&[
+        ("src/parent.rs", "pub fn parent_fn() {}\n"),
+        ("child/src/child.rs", "pub fn child_fn() {}\n"),
+    ]);
+    std::fs::create_dir(dir.path().join("child/.git")).unwrap();
+
+    let out = cx_in(&dir.path().join("child"))
+        .args(["--root", "..", "overview", "../"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("src/"), "should show parent project src dir: {stdout}");
+}
+
+#[test]
+fn explicit_relative_root_is_normalized() {
+    let dir = temp_project(&[
+        ("src/lib.rs", "pub fn alpha() {}\n"),
+        ("src/nested/mod.rs", "pub fn nested() {}\n"),
+    ]);
+
+    let out = cx_in(&dir.path().join("src"))
+        .args(["--root", "..", "overview", "."])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("lib.rs"), "should describe cwd relative to normalized root: {stdout}");
+    assert!(stdout.contains("nested/"), "should include nested src dir: {stdout}");
+}
+
+#[test]
+fn overview_accepts_dotdot_path_to_sibling_directory() {
+    let dir = temp_project(&[
+        ("src/lib.rs", "pub fn alpha() {}\n"),
+        ("src/util.rs", "pub fn gamma() {}\n"),
+    ]);
+
+    let out = cx_in(&dir.path().join("src"))
+        .args(["overview", "./../src"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("alpha"), "should find symbols through normalized path: {stdout}");
+    assert!(stdout.contains("gamma"), "should find sibling file through normalized path: {stdout}");
+}
+
+#[test]
 fn overview_directory_includes_tests_by_default() {
     let dir = temp_project(&[
         ("src/app.ts", "export function main() {}\n"),
@@ -697,6 +767,49 @@ fn dir_project() -> tempfile::TempDir {
         ("src/util.rs", "pub fn gamma() {}\n"),
         ("tests/test_main.rs", "fn test_alpha() {}\n"),
     ])
+}
+
+#[test]
+fn symbols_file_accepts_dotdot_path() {
+    let dir = dir_project();
+    let out = cx_in(&dir.path().join("src"))
+        .args(["symbols", "--file", "../src/lib.rs", "--name", "alpha"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("alpha"), "should find symbol through normalized file path: {stdout}");
+}
+
+#[test]
+fn definition_from_accepts_dotdot_path() {
+    let dir = dir_project();
+    let out = cx_in(&dir.path().join("src"))
+        .args(["definition", "--name", "alpha", "--from", "../src/lib.rs"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("pub fn alpha()"), "should find definition through normalized from path: {stdout}");
+}
+
+#[test]
+fn references_file_accepts_dotdot_path() {
+    let dir = temp_project(&[
+        ("src/a.rs", "pub struct Foo;\nfn use_foo(f: Foo) {}\n"),
+        ("src/b.rs", "use crate::Foo;\nfn bar(f: Foo) {}\n"),
+    ]);
+    let out = cx_in(&dir.path().join("src"))
+        .args(["references", "--name", "Foo", "--file", "../src/a.rs", "--context"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("src/a.rs"), "should find refs through normalized file path: {stdout}");
+    assert!(!stdout.contains("src/b.rs"), "should not include unselected file: {stdout}");
 }
 
 #[test]

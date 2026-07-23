@@ -138,14 +138,14 @@ enum CacheAction {
 
 /// Derive the project root.  Priority:
 /// 1. Explicit --root flag
-/// 2. Walk up from an absolute path argument to find .git
+/// 2. Walk up from a path argument to find .git
 /// 3. Walk up from CWD
 fn resolve_root(explicit: &Option<PathBuf>, path_hint: Option<&Path>) -> PathBuf {
-    if let Some(p) = explicit { return p.clone(); }
-    if let Some(hint) = path_hint
-        && hint.is_absolute()
-    {
-        return util::git::find_project_root(hint);
+    if let Some(p) = explicit {
+        return util::path::absolute_normalize(p);
+    }
+    if let Some(hint) = path_hint {
+        return util::git::find_project_root(&util::path::absolute_normalize(hint));
     }
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     util::git::find_project_root(&cwd)
@@ -178,9 +178,7 @@ fn main() {
         Commands::Overview { ref path, full } => {
             let root = resolve_root(&cli.root, Some(path));
             let idx = index::Index::load_or_build(&root);
-            let abs = if path.is_absolute() { path.clone() } else {
-                env::current_dir().unwrap_or_else(|_| root.clone()).join(path)
-            };
+            let abs = util::path::absolute_normalize(path);
             if abs.is_dir() {
                 query::dir_overview(&idx, path, full, cli.no_tests, cli.json, &resolve_pagination(None))
             } else {
