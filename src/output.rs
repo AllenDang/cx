@@ -102,12 +102,7 @@ pub struct Envelope<'a, T: Serialize> {
 }
 
 impl<'a, T: Serialize> Envelope<'a, T> {
-    pub fn new(
-        query: QueryInfo,
-        freshness: Freshness,
-        page: PageInfo,
-        results: &'a [T],
-    ) -> Self {
+    pub fn new(query: QueryInfo, freshness: Freshness, page: PageInfo, results: &'a [T]) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
             query,
@@ -133,20 +128,23 @@ impl<'a, T: Serialize> Envelope<'a, T> {
 
 /// Emit a failure envelope.  `results` is empty and `error` is populated, which
 /// is what distinguishes this from a successful query that found nothing.
-pub fn print_error_json(
-    query: QueryInfo,
-    freshness: Freshness,
-    code: ErrorCode,
-    message: &str,
-) {
+pub fn print_error_json(query: QueryInfo, freshness: Freshness, code: ErrorCode, message: &str) {
     let empty: [u8; 0] = [];
     let mut envelope = Envelope::new(
         query,
         freshness,
-        PageInfo { total: 0, offset: 0, limit: None, truncated: false },
+        PageInfo {
+            total: 0,
+            offset: 0,
+            limit: None,
+            truncated: false,
+        },
         &empty,
     );
-    envelope.error = Some(ErrorInfo { code, message: message.to_string() });
+    envelope.error = Some(ErrorInfo {
+        code,
+        message: message.to_string(),
+    });
     print_json(&envelope);
 }
 
@@ -211,9 +209,31 @@ fn shell_quote(arg: &str) -> String {
     if arg.is_empty() {
         return "''".to_string();
     }
-    let needs_quotes = arg
-        .chars()
-        .any(|c| c.is_whitespace() || matches!(c, '\'' | '"' | '*' | '?' | '$' | '`' | '\\' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '&' | ';' | '<' | '>' | '#' | '~'));
+    let needs_quotes = arg.chars().any(|c| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '\'' | '"'
+                    | '*'
+                    | '?'
+                    | '$'
+                    | '`'
+                    | '\\'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | '|'
+                    | '&'
+                    | ';'
+                    | '<'
+                    | '>'
+                    | '#'
+                    | '~'
+            )
+    });
     if !needs_quotes {
         return arg.to_string();
     }
@@ -233,8 +253,14 @@ mod tests {
     #[test]
     fn test_toon_encode_array() {
         let syms = vec![
-            Sym { name: "foo".into(), kind: "fn".into() },
-            Sym { name: "Bar".into(), kind: "struct".into() },
+            Sym {
+                name: "foo".into(),
+                kind: "fn".into(),
+            },
+            Sym {
+                name: "Bar".into(),
+                kind: "struct".into(),
+            },
         ];
         let result = encode_default(&syms).unwrap();
         // Should produce tabular format
@@ -256,11 +282,19 @@ mod tests {
 
     #[test]
     fn envelope_keys_are_fixed_on_success() {
-        let rows = vec![Sym { name: "foo".into(), kind: "fn".into() }];
+        let rows = vec![Sym {
+            name: "foo".into(),
+            kind: "fn".into(),
+        }];
         let env = Envelope::new(
             QueryInfo::new("symbols", Some("foo".into())),
             Freshness::empty(crate::index::FreshnessMode::Metadata),
-            PageInfo { total: 1, offset: 0, limit: None, truncated: false },
+            PageInfo {
+                total: 1,
+                offset: 0,
+                limit: None,
+                truncated: false,
+            },
             &rows,
         );
         let value: serde_json::Value = serde_json::to_value(&env).unwrap();
@@ -292,14 +326,22 @@ mod tests {
         let env = Envelope::new(
             QueryInfo::new("symbols", None),
             Freshness::empty(crate::index::FreshnessMode::Verified),
-            PageInfo { total: 0, offset: 0, limit: None, truncated: false },
+            PageInfo {
+                total: 0,
+                offset: 0,
+                limit: None,
+                truncated: false,
+            },
             &empty,
         );
         let value = serde_json::to_value(&env).unwrap();
         assert!(value["page"]["limit"].is_null());
         assert_eq!(value["page"]["truncated"], false);
         assert!(value["results"].as_array().unwrap().is_empty());
-        assert!(value["query"].get("subject").is_none(), "absent subject is omitted");
+        assert!(
+            value["query"].get("subject").is_none(),
+            "absent subject is omitted"
+        );
         assert_eq!(value["freshness"]["mode"], "verified");
     }
 

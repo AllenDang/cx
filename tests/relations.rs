@@ -186,11 +186,16 @@ fn unambiguous_target_resolves_for_every_caller() {
     let rows = edges(&out);
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert!(
-        rows.iter().all(|(_, to, _, amb)| to == "ange::validate_param" && amb.is_empty()),
+        rows.iter()
+            .all(|(_, to, _, amb)| to == "ange::validate_param" && amb.is_empty()),
         "{rows:?}"
     );
     let callers: Vec<&str> = rows.iter().map(|(from, _, _, _)| from.as_str()).collect();
-    assert_eq!(callers, vec!["alpha::run", "ange::EcsWorld::run"], "{rows:?}");
+    assert_eq!(
+        callers,
+        vec!["alpha::run", "ange::EcsWorld::run"],
+        "{rows:?}"
+    );
 
     // One target, so no ambiguity warning.
     assert!(
@@ -207,7 +212,9 @@ fn scope_filter_narrows_caller_edges_to_one_target() {
     let p = fixture_project(CORPUS);
     let out = run_cx(
         p.path(),
-        &["--json", "callers", "--name", "run", "--scope", "alpha::*", "--all"],
+        &[
+            "--json", "callers", "--name", "run", "--scope", "alpha::*", "--all",
+        ],
     );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     let rows = edges(&out);
@@ -223,14 +230,20 @@ fn scope_filter_narrows_caller_edges_to_one_target() {
 #[test]
 fn callees_lists_calls_written_inside_a_body() {
     let p = fixture_project(CORPUS);
-    let out = run_cx(p.path(), &["--json", "callees", "--name", "run_both", "--all"]);
+    let out = run_cx(
+        p.path(),
+        &["--json", "callees", "--name", "run_both", "--all"],
+    );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
 
     let rows = edges(&out);
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert_eq!(rows[0].1, "alpha::run", "{rows:?}");
     assert_eq!(rows[1].1, "beta::run", "{rows:?}");
-    assert!(rows.iter().all(|(from, _, _, _)| from == "run_both"), "{rows:?}");
+    assert!(
+        rows.iter().all(|(from, _, _, _)| from == "run_both"),
+        "{rows:?}"
+    );
 }
 
 /// Reading one arbitrary body would answer a different question than the one
@@ -255,7 +268,9 @@ fn callees_scope_filter_selects_one_body() {
     let p = fixture_project(CORPUS);
     let out = run_cx(
         p.path(),
-        &["--json", "callees", "--name", "run", "--scope", "alpha::*", "--all"],
+        &[
+            "--json", "callees", "--name", "run", "--scope", "alpha::*", "--all",
+        ],
     );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     let rows = edges(&out);
@@ -287,7 +302,10 @@ fn callees_of_a_leaf_symbol_is_an_empty_success() {
 fn relation_queries_use_the_standard_envelope() {
     let p = fixture_project(CORPUS);
     for command in ["callers", "callees"] {
-        let out = run_cx(p.path(), &["--json", command, "--name", "run_both", "--all"]);
+        let out = run_cx(
+            p.path(),
+            &["--json", command, "--name", "run_both", "--all"],
+        );
         let doc = out.json();
         let mut keys: Vec<String> = doc.as_object().unwrap().keys().cloned().collect();
         keys.sort();
@@ -334,11 +352,12 @@ fn relation_output_is_paginated() {
 #[test]
 fn no_multi_hop_traversal_is_offered() {
     let p = fixture_project(CORPUS);
-    let out = run_cx(
-        p.path(),
-        &["callers", "--name", "run", "--depth", "3"],
+    let out = run_cx(p.path(), &["callers", "--name", "run", "--depth", "3"]);
+    assert_ne!(
+        out.code, 0,
+        "a depth flag must not exist yet: {}",
+        out.stdout
     );
-    assert_ne!(out.code, 0, "a depth flag must not exist yet: {}", out.stdout);
     assert!(
         out.stderr.contains("unexpected argument") || out.stderr.contains("--depth"),
         "stderr: {}",

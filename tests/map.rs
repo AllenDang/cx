@@ -45,14 +45,25 @@ fn vendor_generated_and_tests_are_excluded_by_default_and_reported() {
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
 
     let subsystems: Vec<String> = rows_of(&out).into_iter().map(|(s, _, _, _)| s).collect();
-    assert!(!subsystems.contains(&"vendor/".to_string()), "{subsystems:?}");
-    assert!(!subsystems.contains(&"generated/".to_string()), "{subsystems:?}");
-    assert!(!subsystems.contains(&"tests/".to_string()), "{subsystems:?}");
+    assert!(
+        !subsystems.contains(&"vendor/".to_string()),
+        "{subsystems:?}"
+    );
+    assert!(
+        !subsystems.contains(&"generated/".to_string()),
+        "{subsystems:?}"
+    );
+    assert!(
+        !subsystems.contains(&"tests/".to_string()),
+        "{subsystems:?}"
+    );
 
     // Exclusions are facts in the payload, not silent omissions.
     let warnings = warnings_of(&out);
     assert!(
-        warnings.iter().any(|w| w == "1 files excluded as vendor (use --include-vendor)"),
+        warnings
+            .iter()
+            .any(|w| w == "1 files excluded as vendor (use --include-vendor)"),
         "{warnings:?}"
     );
     assert!(
@@ -62,7 +73,9 @@ fn vendor_generated_and_tests_are_excluded_by_default_and_reported() {
         "{warnings:?}"
     );
     assert!(
-        warnings.iter().any(|w| w == "1 files excluded as test (use --tests)"),
+        warnings
+            .iter()
+            .any(|w| w == "1 files excluded as test (use --tests)"),
         "{warnings:?}"
     );
 }
@@ -86,12 +99,18 @@ fn opt_in_flags_bring_excluded_classes_back() {
         .map(|(s, c, _, _)| (s.clone(), c.clone()))
         .collect();
 
-    assert!(by_name.contains(&("vendor/".to_string(), "vendor".to_string())), "{by_name:?}");
+    assert!(
+        by_name.contains(&("vendor/".to_string(), "vendor".to_string())),
+        "{by_name:?}"
+    );
     assert!(
         by_name.contains(&("generated/".to_string(), "generated".to_string())),
         "{by_name:?}"
     );
-    assert!(by_name.contains(&("tests/".to_string(), "test".to_string())), "{by_name:?}");
+    assert!(
+        by_name.contains(&("tests/".to_string(), "test".to_string())),
+        "{by_name:?}"
+    );
 }
 
 #[test]
@@ -107,7 +126,9 @@ fn exclude_glob_filters_paths_and_reports_the_count() {
     // src/ holds 6 indexable files; two match the glob.
     assert_eq!(src.2, 4, "{src:?}");
     assert!(
-        warnings_of(&out).iter().any(|w| w == "2 files excluded by --exclude"),
+        warnings_of(&out)
+            .iter()
+            .any(|w| w == "2 files excluded by --exclude"),
         "{:?}",
         warnings_of(&out)
     );
@@ -122,7 +143,13 @@ fn ranking_puts_the_most_depended_upon_subsystem_first() {
     let p = fixture_project(CORPUS);
     let out = run_cx(
         p.path(),
-        &["--json", "map", "--include-vendor", "--include-generated", "--tests"],
+        &[
+            "--json",
+            "map",
+            "--include-vendor",
+            "--include-generated",
+            "--tests",
+        ],
     );
     let rows = rows_of(&out);
     assert_eq!(rows[0].0, "include/", "{rows:?}");
@@ -131,7 +158,10 @@ fn ranking_puts_the_most_depended_upon_subsystem_first() {
     // Vendored and generated code is present but not at the top.
     let vendor_position = rows.iter().position(|(s, _, _, _)| s == "vendor/").unwrap();
     assert!(vendor_position > 0, "{rows:?}");
-    assert_eq!(rows[vendor_position].3, 0, "nothing depends on vendor: {rows:?}");
+    assert_eq!(
+        rows[vendor_position].3, 0,
+        "nothing depends on vendor: {rows:?}"
+    );
 }
 
 #[test]
@@ -170,10 +200,7 @@ fn low_information_symbol_names_are_suppressed_from_api_samples() {
             !names.contains(&"run"),
             "`run` must be suppressed as low-information: {api}"
         );
-        assert!(
-            !names.contains(&"get") && !names.contains(&"new"),
-            "{api}"
-        );
+        assert!(!names.contains(&"get") && !names.contains(&"new"), "{api}");
     }
 
     // Distinctive names still appear.
@@ -183,7 +210,10 @@ fn low_information_symbol_names_are_suppressed_from_api_samples() {
         .find(|r| r["subsystem"].as_str().unwrap() == "src/")
         .expect("src/ row");
     let api = src["api"].as_str().unwrap();
-    assert!(api.contains("AlphaRunner") || api.contains("Tickable"), "{api}");
+    assert!(
+        api.contains("AlphaRunner") || api.contains("Tickable"),
+        "{api}"
+    );
 }
 
 // --- §8: only provable edges ----------------------------------------------
@@ -256,10 +286,16 @@ fn depth_controls_subsystem_granularity() {
     let shallow = run_cx(p.path(), &["--json", "map", "--depth", "1"]);
     let deep = run_cx(p.path(), &["--json", "map", "--depth", "2"]);
 
-    let shallow_names: Vec<String> = rows_of(&shallow).into_iter().map(|(s, _, _, _)| s).collect();
+    let shallow_names: Vec<String> = rows_of(&shallow)
+        .into_iter()
+        .map(|(s, _, _, _)| s)
+        .collect();
     let deep_names: Vec<String> = rows_of(&deep).into_iter().map(|(s, _, _, _)| s).collect();
 
-    assert!(shallow_names.contains(&"include/".to_string()), "{shallow_names:?}");
+    assert!(
+        shallow_names.contains(&"include/".to_string()),
+        "{shallow_names:?}"
+    );
     assert!(
         deep_names.contains(&"include/ange/".to_string()),
         "depth 2 splits the include tree: {deep_names:?}"
@@ -271,7 +307,15 @@ fn map_output_is_paginated_with_runnable_next_queries() {
     let p = fixture_project(CORPUS);
     let out = run_cx(
         p.path(),
-        &["--json", "map", "--include-vendor", "--include-generated", "--tests", "--limit", "2"],
+        &[
+            "--json",
+            "map",
+            "--include-vendor",
+            "--include-generated",
+            "--tests",
+            "--limit",
+            "2",
+        ],
     );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     assert_eq!(out.json_len(), 2, "{}", out.stdout);
@@ -286,17 +330,21 @@ fn map_output_is_paginated_with_runnable_next_queries() {
         .iter()
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
-    assert!(
-        next.iter().any(|c| c.contains("--offset 2")),
-        "{next:?}"
-    );
+    assert!(next.iter().any(|c| c.contains("--offset 2")), "{next:?}");
 
     // The suggested page returns the remaining rows without overlap.
     let page2 = run_cx(
         p.path(),
         &[
-            "--json", "map", "--include-vendor", "--include-generated", "--tests", "--limit", "2",
-            "--offset", "2",
+            "--json",
+            "map",
+            "--include-vendor",
+            "--include-generated",
+            "--tests",
+            "--limit",
+            "2",
+            "--offset",
+            "2",
         ],
     );
     assert_eq!(page2.page()["offset"].as_u64().unwrap(), 2);
@@ -349,5 +397,8 @@ fn overview_output_is_unchanged_by_the_map_command() {
     // Root overview lists one level: 6 subdirectories + README.md.
     assert_eq!(out.json_len(), 7, "{}", out.stdout);
     let first = &out.results()[0];
-    assert!(first.get("subsystem").is_none(), "overview rows are not map rows");
+    assert!(
+        first.get("subsystem").is_none(),
+        "overview rows are not map rows"
+    );
 }

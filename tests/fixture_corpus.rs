@@ -90,12 +90,7 @@ fn cpp_declaration_and_definition_are_machine_distinguishable() {
 
     let seen: Vec<(&str, &str)> = rows
         .iter()
-        .map(|r| {
-            (
-                r["file"].as_str().unwrap(),
-                r["role"].as_str().unwrap(),
-            )
-        })
+        .map(|r| (r["file"].as_str().unwrap(), r["role"].as_str().unwrap()))
         .collect();
     assert_eq!(
         seen,
@@ -111,7 +106,10 @@ fn cpp_declaration_and_definition_are_machine_distinguishable() {
 #[test]
 fn role_filter_selects_declarations_only() {
     let p = fixture_project(CORPUS);
-    let out = run_cx(p.path(), &["--json", "symbols", "--role", "declaration", "--all"]);
+    let out = run_cx(
+        p.path(),
+        &["--json", "symbols", "--role", "declaration", "--all"],
+    );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     let rows = out.results();
 
@@ -136,7 +134,8 @@ fn role_filter_selects_declarations_only() {
         out.stdout
     );
     assert!(
-        rows.iter().all(|r| r["role"].as_str().unwrap() == "declaration"),
+        rows.iter()
+            .all(|r| r["role"].as_str().unwrap() == "declaration"),
         "{}",
         out.stdout
     );
@@ -161,7 +160,11 @@ fn role_filter_selects_the_implementation_of_a_shared_name() {
     let rows = out.results();
     assert_eq!(rows.len(), 1, "{}", out.stdout);
     assert_eq!(rows[0]["file"].as_str().unwrap(), "src/ecs.cpp");
-    assert!(rows[0]["body"].as_str().unwrap().contains("runtime_error"), "{}", out.stdout);
+    assert!(
+        rows[0]["body"].as_str().unwrap().contains("runtime_error"),
+        "{}",
+        out.stdout
+    );
 }
 
 #[test]
@@ -184,7 +187,10 @@ fn every_symbol_carries_a_role() {
 #[test]
 fn markdown_headings_use_the_heading_role() {
     let p = fixture_project(CORPUS);
-    let out = run_cx(p.path(), &["--json", "symbols", "--file", "docs/design.md", "--all"]);
+    let out = run_cx(
+        p.path(),
+        &["--json", "symbols", "--file", "docs/design.md", "--all"],
+    );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     let rows = out.results();
     for row in &rows {
@@ -395,10 +401,18 @@ fn empty_result_emits_an_envelope_with_zero_results() {
     assert_eq!(doc["schema_version"].as_u64().unwrap(), 1);
     assert_eq!(doc["query"]["kind"].as_str().unwrap(), "references");
     assert_eq!(doc["query"]["subject"].as_str().unwrap(), "run");
-    assert!(doc["results"].as_array().unwrap().is_empty(), "{}", out.stdout);
+    assert!(
+        doc["results"].as_array().unwrap().is_empty(),
+        "{}",
+        out.stdout
+    );
     assert_eq!(doc["page"]["total"].as_u64().unwrap(), 0);
     assert!(!doc["page"]["truncated"].as_bool().unwrap());
-    assert!(doc["error"].is_null(), "zero results is not an error: {}", out.stdout);
+    assert!(
+        doc["error"].is_null(),
+        "zero results is not an error: {}",
+        out.stdout
+    );
     // In JSON mode the payload is authoritative: no duplicate stderr chatter.
     assert!(
         !out.stderr.contains("no matches"),
@@ -413,7 +427,11 @@ fn empty_result_emits_an_envelope_with_zero_results() {
     );
     assert_eq!(toon.code, 0);
     assert!(toon.stdout.is_empty(), "{}", toon.stdout);
-    assert!(toon.stderr.contains("no matches"), "stderr: {}", toon.stderr);
+    assert!(
+        toon.stderr.contains("no matches"),
+        "stderr: {}",
+        toon.stderr
+    );
 }
 
 // --- §6.1/§6.3 stable envelope and output budget ----------------------------
@@ -534,7 +552,10 @@ fn truncated_page_suggests_runnable_next_queries() {
 #[test]
 fn ambiguous_definition_reports_distinct_qualified_symbols() {
     let p = fixture_project(CORPUS);
-    let out = run_cx(p.path(), &["--json", "definition", "--name", "run", "--all"]);
+    let out = run_cx(
+        p.path(),
+        &["--json", "definition", "--name", "run", "--all"],
+    );
     let doc = out.json();
     let warnings: Vec<&str> = doc["warnings"]
         .as_array()
@@ -559,14 +580,23 @@ fn ambiguous_definition_reports_distinct_qualified_symbols() {
     );
     // Listed names are qualified and bounded (5 then an ellipsis).
     assert!(warnings[0].contains("alpha::run"), "{}", warnings[0]);
-    assert!(warnings[0].contains("..."), "list must stay bounded: {}", warnings[0]);
+    assert!(
+        warnings[0].contains("..."),
+        "list must stay bounded: {}",
+        warnings[0]
+    );
 
     // A C++ prototype plus its definition: one logical symbol, no warning.
     let one_symbol = run_cx(
         p.path(),
         &["--json", "definition", "--name", "validate_param", "--all"],
     );
-    assert_eq!(one_symbol.json_len(), 2, "decl + def\n{}", one_symbol.stdout);
+    assert_eq!(
+        one_symbol.json_len(),
+        2,
+        "decl + def\n{}",
+        one_symbol.stdout
+    );
     assert!(
         one_symbol.json()["warnings"].as_array().unwrap().is_empty(),
         "declaration + definition of one symbol is not ambiguity: {}",
@@ -675,10 +705,7 @@ fn renamed_file_moves_its_symbols() {
 
     let out = run_cx(p.path(), &["--json", "symbols", "--name", "run", "--all"]);
     let rows = out.results();
-    let files: Vec<&str> = rows
-        .iter()
-        .map(|r| r["file"].as_str().unwrap())
-        .collect();
+    let files: Vec<&str> = rows.iter().map(|r| r["file"].as_str().unwrap()).collect();
     assert!(!files.contains(&"src/scope_a.cpp"), "{files:?}");
     assert!(files.contains(&"src/scope_a_renamed.cpp"), "{files:?}");
     assert_eq!(files.len(), 12, "{files:?}");
@@ -697,7 +724,12 @@ fn freshness_is_reported_with_every_result() {
     // parsed.
     assert_eq!(fresh["generation"].as_u64().unwrap(), 1, "{}", out.stdout);
     assert_eq!(fresh["mode"].as_str().unwrap(), "metadata");
-    assert_eq!(fresh["files_updated"].as_u64().unwrap(), 12, "{}", out.stdout);
+    assert_eq!(
+        fresh["files_updated"].as_u64().unwrap(),
+        12,
+        "{}",
+        out.stdout
+    );
     assert_eq!(fresh["files_removed"].as_u64().unwrap(), 0);
 
     // A second query changes nothing, so the generation is unchanged and no
@@ -706,7 +738,12 @@ fn freshness_is_reported_with_every_result() {
     let fresh = &again.json()["freshness"];
     assert_eq!(fresh["generation"].as_u64().unwrap(), 1, "{}", again.stdout);
     assert_eq!(fresh["files_updated"].as_u64().unwrap(), 0);
-    assert_eq!(fresh["files_checked"].as_u64().unwrap(), 12, "{}", again.stdout);
+    assert_eq!(
+        fresh["files_checked"].as_u64().unwrap(),
+        12,
+        "{}",
+        again.stdout
+    );
 }
 
 /// Phase 4 (roadmap §7): `--fresh verified` is reported as such, and a query
@@ -717,13 +754,21 @@ fn freshness_mode_reflects_the_check_that_ran() {
     let _ = run_cx(p.path(), &["--json", "symbols", "--all"]);
 
     let metadata = run_cx(p.path(), &["--json", "symbols", "--name", "run", "--all"]);
-    assert_eq!(metadata.json()["freshness"]["mode"].as_str().unwrap(), "metadata");
+    assert_eq!(
+        metadata.json()["freshness"]["mode"].as_str().unwrap(),
+        "metadata"
+    );
 
     let verified = run_cx(
         p.path(),
-        &["--fresh", "verified", "--json", "symbols", "--name", "run", "--all"],
+        &[
+            "--fresh", "verified", "--json", "symbols", "--name", "run", "--all",
+        ],
     );
-    assert_eq!(verified.json()["freshness"]["mode"].as_str().unwrap(), "verified");
+    assert_eq!(
+        verified.json()["freshness"]["mode"].as_str().unwrap(),
+        "verified"
+    );
     assert_eq!(verified.json_len(), 12, "{}", verified.stdout);
 }
 
@@ -737,12 +782,21 @@ fn unindexed_file_filter_reports_a_machine_readable_code() {
 
     // Phase 3: the failure is in the payload, not only on stderr.
     let doc = out.json();
-    assert_eq!(out.error_code().as_deref(), Some("file_not_indexed"), "{}", out.stdout);
+    assert_eq!(
+        out.error_code().as_deref(),
+        Some("file_not_indexed"),
+        "{}",
+        out.stdout
+    );
     assert_eq!(
         doc["error"]["message"].as_str().unwrap(),
         "file not in index: src/nope.cpp"
     );
-    assert!(doc["results"].as_array().unwrap().is_empty(), "{}", out.stdout);
+    assert!(
+        doc["results"].as_array().unwrap().is_empty(),
+        "{}",
+        out.stdout
+    );
 
     // Without --json the same failure is reported on stderr as before.
     let toon = run_cx(p.path(), &["symbols", "--file", "src/nope.cpp"]);

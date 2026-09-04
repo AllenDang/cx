@@ -1,10 +1,10 @@
 mod index;
 mod lang;
+mod language;
 mod map;
 mod output;
 mod query;
 mod relations;
-mod language;
 mod util;
 
 use clap::{Parser, Subcommand};
@@ -236,10 +236,16 @@ fn main() {
         let limit = if cli.all {
             None
         } else {
-            Some(cli.limit.unwrap_or_else(|| default_limit.unwrap_or(usize::MAX)))
+            Some(
+                cli.limit
+                    .unwrap_or_else(|| default_limit.unwrap_or(usize::MAX)),
+            )
         };
         let limit = limit.filter(|&n| n < usize::MAX);
-        query::Pagination { limit, offset: cli.offset }
+        query::Pagination {
+            limit,
+            offset: cli.offset,
+        }
     };
 
     let exit_code = match cli.command {
@@ -248,13 +254,30 @@ fn main() {
             let idx = index::Index::load_or_build(&root, &freshness);
             let abs = util::path::canonical(path);
             if abs.is_dir() {
-                query::dir_overview(&idx, path, full, cli.no_tests, cli.json, &resolve_pagination(None))
+                query::dir_overview(
+                    &idx,
+                    path,
+                    full,
+                    cli.no_tests,
+                    cli.json,
+                    &resolve_pagination(None),
+                )
             } else {
-                let filters = query::Filters { file: Some(path), ..Default::default() };
+                let filters = query::Filters {
+                    file: Some(path),
+                    ..Default::default()
+                };
                 query::symbols(&idx, &filters, true, cli.json, &resolve_pagination(None))
             }
         }
-        Commands::Symbols { ref file, ref name, kind, role, ref scope, kinds } => {
+        Commands::Symbols {
+            ref file,
+            ref name,
+            kind,
+            role,
+            ref scope,
+            kinds,
+        } => {
             let root = resolve_root(&cli.root, file.as_deref());
             let idx = index::Index::load_or_build(&root, &freshness);
             if kinds {
@@ -267,10 +290,23 @@ fn main() {
                     kind,
                     role,
                 };
-                query::symbols(&idx, &filters, false, cli.json, &resolve_pagination(Some(100)))
+                query::symbols(
+                    &idx,
+                    &filters,
+                    false,
+                    cli.json,
+                    &resolve_pagination(Some(100)),
+                )
             }
         }
-        Commands::Definition { ref name, ref from, kind, role, ref scope, max_lines } => {
+        Commands::Definition {
+            ref name,
+            ref from,
+            kind,
+            role,
+            ref scope,
+            max_lines,
+        } => {
             let root = resolve_root(&cli.root, from.as_deref());
             let idx = index::Index::load_or_build(&root, &freshness);
             let default = if from.is_some() { None } else { Some(3) };
@@ -281,24 +317,62 @@ fn main() {
                 role,
                 ..Default::default()
             };
-            query::definition(&idx, name, &filters, max_lines, cli.json, &resolve_pagination(default))
+            query::definition(
+                &idx,
+                name,
+                &filters,
+                max_lines,
+                cli.json,
+                &resolve_pagination(default),
+            )
         }
-        Commands::References { ref name, ref file, context } => {
+        Commands::References {
+            ref name,
+            ref file,
+            context,
+        } => {
             let root = resolve_root(&cli.root, file.as_deref());
             let idx = index::Index::load_or_build(&root, &freshness);
-            query::references(&idx, name, file.as_deref(), context, cli.json, &resolve_pagination(Some(50)))
+            query::references(
+                &idx,
+                name,
+                file.as_deref(),
+                context,
+                cli.json,
+                &resolve_pagination(Some(50)),
+            )
         }
-        Commands::Callers { ref name, ref scope } => {
+        Commands::Callers {
+            ref name,
+            ref scope,
+        } => {
             let root = resolve_root(&cli.root, None);
             let idx = index::Index::load_or_build(&root, &freshness);
             let report = relations::callers(&idx, name, scope.as_deref());
-            query::relation_report(&idx, "callers", name, report, cli.json, &resolve_pagination(Some(50)))
+            query::relation_report(
+                &idx,
+                "callers",
+                name,
+                report,
+                cli.json,
+                &resolve_pagination(Some(50)),
+            )
         }
-        Commands::Callees { ref name, ref scope } => {
+        Commands::Callees {
+            ref name,
+            ref scope,
+        } => {
             let root = resolve_root(&cli.root, None);
             let idx = index::Index::load_or_build(&root, &freshness);
             let report = relations::callees(&idx, name, scope.as_deref());
-            query::relation_report(&idx, "callees", name, report, cli.json, &resolve_pagination(Some(50)))
+            query::relation_report(
+                &idx,
+                "callees",
+                name,
+                report,
+                cli.json,
+                &resolve_pagination(Some(50)),
+            )
         }
         Commands::Map {
             depth,
@@ -334,13 +408,11 @@ fn main() {
             let idx = index::Index::load_or_build(&root, &req);
             query::refresh_report(&idx, paths, cli.json)
         }
-        Commands::Lang { action } => {
-            match action {
-                LangAction::Add { languages } => lang::add(&languages),
-                LangAction::Remove { languages } => lang::remove(&languages),
-                LangAction::List => lang::list(),
-            }
-        }
+        Commands::Lang { action } => match action {
+            LangAction::Add { languages } => lang::add(&languages),
+            LangAction::Remove { languages } => lang::remove(&languages),
+            LangAction::List => lang::list(),
+        },
         Commands::Skill => {
             print!("{}", include_str!("skill.md"));
             0

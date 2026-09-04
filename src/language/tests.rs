@@ -41,7 +41,10 @@ fn markdown_headings_are_sections() {
     assert_eq!(syms[0].name, "Title");
     assert_eq!(syms[0].kind, SymbolKind::Heading);
     assert_eq!(syms[0].signature, "# Title");
-    assert_eq!(&src.as_bytes()[syms[1].byte_range.0..syms[1].byte_range.1], b"## Usage\nbody\n\n### Details\nmore\n\n");
+    assert_eq!(
+        &src.as_bytes()[syms[1].byte_range.0..syms[1].byte_range.1],
+        b"## Usage\nbody\n\n### Details\nmore\n\n"
+    );
 }
 
 #[test]
@@ -1624,7 +1627,10 @@ fn c_includes_are_extracted() {
 fn rust_use_declarations_are_extracted() {
     let src = "use std::collections::HashMap;\nuse crate::index::Symbol;\nfn f() {}\n";
     let imports = extract_imports_of("rust", src, "a.rs");
-    assert_eq!(imports, vec!["std::collections::HashMap", "crate::index::Symbol"]);
+    assert_eq!(
+        imports,
+        vec!["std::collections::HashMap", "crate::index::Symbol"]
+    );
 }
 
 #[test]

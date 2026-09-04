@@ -6,6 +6,15 @@ on:
   pull_request:
 
 jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
   test:
     strategy:
       matrix:
@@ -16,7 +25,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install grammars
-        run: cargo run -- lang add markdown rust typescript python go c objc cpp java ruby lua zig bash solidity elixir swift dart
+        run: >-
+          cargo run -- lang add markdown rust typescript python go c objc cpp
+          java ruby lua zig bash solidity elixir swift dart
       - run: cargo test
 
   clippy:
@@ -27,11 +38,11 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -- -D warnings
+      - run: cargo clippy --all-targets --all-features -- -D warnings
 
   auto-tag:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: [test, clippy]
+    needs: [fmt, test, clippy]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -41,7 +52,8 @@ jobs:
           fetch-depth: 0
       - name: Tag if version bumped
         run: |
-          VERSION="v$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')"
+          RAW="$(grep '^version' Cargo.toml | head -1)"
+          VERSION="v$(printf '%s' "$RAW" | sed 's/.*"\(.*\)"/\1/')"
           if git rev-parse "$VERSION" >/dev/null 2>&1; then
             echo "Tag $VERSION already exists, skipping"
           else

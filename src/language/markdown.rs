@@ -70,17 +70,20 @@ fn collect_headings(source: &[u8]) -> Vec<Heading> {
                 fence_marker = marker;
                 fence_len = len;
             }
-        } else if !in_fence
-            && let Some(level) = atx_heading_level(trimmed) {
-                headings.push(Heading {
-                    level,
-                    start: offset,
-                    line_end,
-                    section_end: source.len(),
-                });
-            }
+        } else if !in_fence && let Some(level) = atx_heading_level(trimmed) {
+            headings.push(Heading {
+                level,
+                start: offset,
+                line_end,
+                section_end: source.len(),
+            });
+        }
 
-        offset = if line_end < source.len() { line_end + 1 } else { source.len() };
+        offset = if line_end < source.len() {
+            line_end + 1
+        } else {
+            source.len()
+        };
     }
 
     headings
@@ -127,4 +130,3 @@ fn trim_ascii_start(bytes: &[u8]) -> &[u8] {
 fn trim_cr(bytes: &[u8]) -> &[u8] {
     bytes.strip_suffix(b"\r").unwrap_or(bytes)
 }
-

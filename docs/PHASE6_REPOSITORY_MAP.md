@@ -154,6 +154,53 @@ clean.
 | symbol search | 31 ms | 32 ms |
 | `cx map --depth 2` | — | 29 ms / 737 B |
 
-`overview` is byte-for-byte unchanged, which §8 requires. `map` costs about the
-same as any other warm query because imports are read from the index rather than
-re-parsed, and its output is *smaller* than root `overview` on this repository.
+`overview` is byte-for-byte unchanged, which §8 requires.
+
+## The 48-file benchmark was not sufficient
+
+**The measurement above is inadequate and should not have been accepted as
+evidence that `map` was fast.** It was taken on cx's own repository — 48 indexed
+files — where `map` finished in 29 ms. `map`'s cost is dominated by *import
+resolution*, whose original implementation compared every written import against
+every indexed path and allocated two `String`s per pair. That is `O(imports x
+files)`, and a 48-file corpus cannot distinguish it from a constant-time lookup.
+
+Acceptance on the fixed ANGE corpus (commit `70fe1922de2f05bec4a94f5967c68a92a8320b1a`,
+3,905 indexed files, 6,229 external imports) exposed it immediately:
+
+| `cx map --depth 2` on ANGE | median | p95 | peak RSS |
+| --- | ---: | ---: | ---: |
+| original per-import scan | **3400 ms** | 3440 ms | 50.3 MiB |
+| prebuilt suffix lookup | **110 ms** | 120 ms | 50.9 MiB |
+| budget | 500 ms | 1000 ms | 128 MiB |
+
+The fix is `ImportIndex`: one pass over the file set builds a map from every
+component-boundary path suffix to the files carrying it, so each import becomes a
+single hash probe instead of a corpus scan. `depth 1` was equally slow before
+(3370 ms) and `symbols --all` — which loads the whole index and prints 14 MB —
+took only 160 ms, which is how the cost was localized to resolution rather than
+index loading or grouping.
+
+The three outcomes are unchanged, and this was verified rather than assumed: on
+ANGE the post-change `map --depth 2` payload is *identical* to the pre-change
+payload — all 36 subsystem rows, every `depends_on` set, every
+`external_imports` count, and the same 74 imports reported as matching several
+files and therefore left unresolved. `callers`, `references` and `definition`
+outputs are byte-identical too.
+
+Two lasting changes came out of this:
+
+- `src/map.rs` has `include_resolution_does_not_scale_with_corpus_size`, which
+  resolves 6,000 imports against 4,000 files and fails if that ever takes
+  seconds again. The old scan needs tens of seconds at that size in a debug
+  build; the lookup finishes in ~20 ms.
+- `scripts/bench.sh` now measures `map --depth 1`, `map --depth 2`, `callers` and
+  `callees`. It previously covered none of them, which is why the regression was
+  invisible to the benchmark. Fixing that also uncovered a bug in the script
+  itself: it passed relative path arguments while running from a different cwd,
+  so benchmarking any project other than the current directory aborted the entire
+  warm-query section silently under `set -e`.
+
+The general lesson for the remaining phases: a benchmark corpus must be large
+enough that an accidental `O(n x m)` is visibly different from `O(n)`. cx's own
+repository is not that corpus.

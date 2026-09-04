@@ -1,5 +1,5 @@
+use crate::language::{download_names_for, supported_languages};
 use std::path::PathBuf;
-use crate::language::{supported_languages, download_names_for};
 
 pub fn cx_cache_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("CX_CACHE_DIR") {
@@ -23,7 +23,11 @@ pub fn add(languages: &[String]) -> i32 {
     let supported = supported_languages();
     for lang in languages {
         if !supported.contains(&lang.as_str()) {
-            eprintln!("cx: unknown language '{}' — supported: {}", lang, supported.join(", "));
+            eprintln!(
+                "cx: unknown language '{}' — supported: {}",
+                lang,
+                supported.join(", ")
+            );
             return 1;
         }
     }
@@ -69,7 +73,11 @@ pub fn remove(languages: &[String]) -> i32 {
 
     for lang in languages {
         let names = download_names_for(lang);
-        let names = if names.is_empty() { vec![lang.as_str()] } else { names };
+        let names = if names.is_empty() {
+            vec![lang.as_str()]
+        } else {
+            names
+        };
         let mut removed_any = false;
         for name in &names {
             let lib_prefix = format!("libtree_sitter_{name}");
@@ -77,7 +85,11 @@ pub fn remove(languages: &[String]) -> i32 {
                 for entry in entries.flatten() {
                     let fname = entry.file_name();
                     let fname_str = fname.to_string_lossy();
-                    if fname_str.starts_with(&lib_prefix) && (fname_str.ends_with(".so") || fname_str.ends_with(".dylib") || fname_str.ends_with(".dll")) {
+                    if fname_str.starts_with(&lib_prefix)
+                        && (fname_str.ends_with(".so")
+                            || fname_str.ends_with(".dylib")
+                            || fname_str.ends_with(".dll"))
+                    {
                         let _ = std::fs::remove_file(entry.path());
                         removed_any = true;
                     }
@@ -101,9 +113,15 @@ pub fn list() -> i32 {
     for lang in &supported {
         let names = download_names_for(lang);
         let is_installed = names.iter().all(|n| installed.iter().any(|i| i == n));
-        let marker = if is_installed { "[installed]" } else { "[missing]" };
+        let marker = if is_installed {
+            "[installed]"
+        } else {
+            "[missing]"
+        };
         println!("{lang:<15} {marker}");
     }
-    eprintln!("\nNeed another language? Open an issue: https://github.com/ind-igo/cx/issues/new?template=language-request.yml");
+    eprintln!(
+        "\nNeed another language? Open an issue: https://github.com/ind-igo/cx/issues/new?template=language-request.yml"
+    );
     0
 }

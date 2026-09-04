@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
 - `cx callers --name X` and `cx callees --name X`: direct (one-hop) call edges, each carrying `evidence`, `resolution` (`syntax`, `lexical_scope`, `import_resolved`), file, line, and `ambiguous_candidates`. cx never picks a target it cannot justify — an unresolvable call reports an empty target and lists every candidate. Candidates are restricted to the caller's language. `callees` on an ambiguous name returns no rows and names the candidates instead of reading an arbitrary body. No multi-hop traversal and no type resolution.
 - `cx references` rows now carry `evidence` (`definition`, `declaration`, `call`, `type_reference`, `import`, `identifier_reference`) and `resolution: syntax`.
 - `cx map`: bounded repository orientation. Groups files into subsystems (`--depth N`), reports sizes and test/vendor/generated/docs classification, and shows import edges that resolve to an indexed file. Ranked by fan-in with the ranking basis printed; vendor, generated and test paths are excluded by default and every exclusion is reported with the flag that restores it (`--include-vendor`, `--include-generated`, `--tests`, plus repeatable `--exclude <glob>`). Low-information symbol names are suppressed from API samples.
@@ -28,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixture corpus (`tests/fixtures/agent_corpus`) and `scripts/bench.sh` for reproducible correctness and performance baselines.
 
 ### Changed
+
+- Whole repository formatted with `cargo fmt`, and `cargo fmt --all -- --check` added as a CI job so it cannot regress. CI clippy widened to `--all-targets --all-features`.
 - `INDEX_VERSION` 11 → 12; existing indexes rebuild automatically on first use. Index entries now store lexical scope, import targets, file size, and a content hash (all recorded from data already available during parsing, so indexing cost is unchanged).
 - TOON and JSON symbol rows include a `qualified` column; `cx definition` plain-text output adds a `qualified:` line when the scope is resolved.
 - Ordinary queries now compare file size in addition to mtime, catching same-mtime edits that change length.
@@ -39,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TOON and JSON symbol rows include a `role` column; `cx definition` plain-text output includes a `role:` line.
 
 ### Fixed
+
+- `cx map` no longer resolves includes by scanning every indexed path per import. A prebuilt component-boundary suffix lookup replaces the `O(imports × files)` scan, taking `map --depth 2` on a 3,905-file corpus from 3.4 s to 0.11 s median. File/External/Ambiguous outcomes are unchanged and were verified byte-identical on that corpus, including the 74 imports reported as ambiguous.
+- `scripts/bench.sh` only benchmarked the current directory correctly: relative path arguments resolved against the caller's cwd, so pointing it at another project silently aborted the whole warm-query section under `set -e`. It now also measures `map`, `callers` and `callees`.
 - `cx --json symbols` with zero matches printed nothing instead of the standard envelope, unlike every other command.
 - `cx --root /tmp/p overview /private/tmp/p/src/a.rs` no longer fails with "file not in index".
 - `cx refresh` no longer derives the project root from its path arguments, which could silently retarget cx at an unrelated directory and build a new index there.
@@ -46,16 +52,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.2] - 2026-07-23
 
 ### Fixed
+
 - Relative path arguments containing `.` or `..` now resolve consistently across overview, symbols, definition, and references.
 
 ## [0.7.1] - 2026-05-15
 
 ### Added
+
 - Objective-C support for `.m` and `.mm` files, including classes, protocols, methods, and C functions.
 
 ## [0.7.0] - 2026-05-14
 
 ### Added
+
 - Markdown heading navigation: `.md`, `.markdown`, and `.mdown` files are indexed by headings, and `definition` returns the selected heading section.
 - Line ranges in `overview` output for more precise navigation.
 - `cx symbols --kinds` to list available symbol kinds with counts.
@@ -64,6 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows ARM64 release support.
 
 ### Changed
+
 - References now default to the compact grouped summary; exact matching lines are available with `--context`.
 - Overview includes test files and test symbols by default; use `--no-tests` to exclude them.
 - Absolute path arguments now derive the project root from the provided path instead of only the current working directory.
@@ -72,17 +82,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SymbolKind::Method` was collapsed into `fn` for simpler output.
 
 ### Fixed
+
 - Directory overview and symbol/definition filtering now handle current-working-directory and absolute-path resolution more consistently.
 - C++ declaration-only headers at nested paths are indexed correctly.
 
 ## [0.6.3] - 2026-04-04
 
 ### Added
+
 - `CX_CACHE_DIR` env var to override the cache location (#14) — enables cx in sandboxed agents (Codex, Claude Code) that restrict writes outside the workspace
 
 ## [0.6.2] - 2026-04-04
 
 ### Added
+
 - **Pagination** (#15): Global `--limit`, `--offset`, `--all` flags across all query commands
   - Default limits: definition (3), symbols (100), references (50)
   - Compact stderr hint when truncated: `cx: 3/32 definitions for "X" | --from PATH to narrow | --offset 3 for more | --all`
@@ -91,12 +104,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Definition results sorted by symbol priority (types first) before pagination
 
 ### Changed
+
 - Definition paginates before reading bodies from disk (avoids wasted I/O on large match sets)
 - Skill prompt trimmed from ~1000 to ~350 tokens
 
 ## [0.6.1] - 2026-04-02
 
 ### Added
+
 - **Dart language support** (#9, requested by @evanscai): classes (sealed/base/interface/mixin), mixins, extensions, extension types, enums, functions, methods, getters/setters, constructors (named/factory), operators, type aliases
 - **Comprehensive Swift support** (based on #11 by @upupc): actors, extensions, properties, subscripts, enum bodies, init/deinit (#10, #12)
 - **Elixir enhancements** (#6 by @RamXX): `@type`/`@typep`/`@opaque`, `@callback`, `defimpl`
@@ -104,34 +119,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Test symbol filtering in directory overviews — excludes test files by path pattern and Rust `#[test]`/`#[cfg(test)]` inline tests
 
 ### Changed
+
 - Language module refactored into focused files (`queries/*.rs`, `extract.rs`, `tests.rs`)
 - `RwLock` + thread-local `Parser` for better parallel indexing performance
 - Symbol dedup now prefers later (more specific) query matches for same byte range
 - Index version bumped to 6 (forces reindex)
 
 ### Fixed
-- `--root` flag now correctly resolves relative paths against the project root instead of cwd
 
+- `--root` flag now correctly resolves relative paths against the project root instead of cwd
 
 ## [0.6.0] - 2026-03-30
 
 ### Changed
+
 - **Breaking:** Index database moved from `.cx-index.db` in the repo root to `~/.cache/cx/indexes/`. No more repo pollution or `.gitignore` dance.
 
 ### Added
+
 - `cx cache path` — print the index cache path for the current project
 - `cx cache clean` — delete the cached index for the current project
 
 ### Removed
+
 - `.cx-index.db` repo-local index file
 - Gitignore warning on first run
 
 ### Fixed
+
 - Flaky incremental update tests on filesystems with coarse (1-second) mtime granularity
 
 ## [0.5.0] - 2026-03-25
 
 ### Added
+
 - `cx lang add <languages>` — download and install language grammars on demand
 - `cx lang remove <languages>` — remove installed grammars
 - `cx lang list` — show supported languages and install status
@@ -139,6 +160,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - First-run UX: shows detected languages with file counts and install command
 
 ### Changed
+
 - Grammars are now dynamically loaded via `tree-sitter-language-pack` instead of
   statically linking 14 `tree-sitter-{lang}` crates
 - `Language` enum replaced with string-based language identification
@@ -149,18 +171,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release binary reduced from ~25MB to ~7MB
 
 ### Removed
+
 - Static dependency on 14 individual `tree-sitter-{lang}` crates
 
 ## [0.4.5] - 2026-03-24
 
 ### Changed
+
 - Updated Cargo.lock for redb 3 upgrade
 
 ## [0.4.4] - 2026-03-23
 
 ### Fixed
+
 - x86_64 macOS build runner configuration
 
 ### Added
+
 - Release workflow and install script
 - Concurrent read access via redb 3 upgrade

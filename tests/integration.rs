@@ -1,5 +1,5 @@
-use std::process::Command;
 use std::io::Write;
+use std::process::Command;
 
 fn cx() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_cx"));
@@ -53,11 +53,17 @@ fn json_page(stdout: &str) -> serde_json::Value {
 /// Returns (project_a, project_b) temp dirs.
 fn two_projects() -> (tempfile::TempDir, tempfile::TempDir) {
     let a = temp_project(&[
-        ("src/alpha.rs", "pub fn alpha_fn() {}\npub struct AlphaType;\n"),
+        (
+            "src/alpha.rs",
+            "pub fn alpha_fn() {}\npub struct AlphaType;\n",
+        ),
         ("src/shared.rs", "pub fn shared() { 1 }\n"),
     ]);
     let b = temp_project(&[
-        ("src/beta.ts", "export function betaFn() {}\nexport class BetaClass {}\n"),
+        (
+            "src/beta.ts",
+            "export function betaFn() {}\nexport class BetaClass {}\n",
+        ),
         ("src/shared.rs", "pub fn shared() { 2 }\n"),
     ]);
     (a, b)
@@ -67,8 +73,15 @@ fn two_projects() -> (tempfile::TempDir, tempfile::TempDir) {
 fn overview_main_rs() {
     let out = cx().args(["overview", "src/main.rs"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("{name,qualified,kind,role,range,signature}:"), "should have TOON header: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("{name,qualified,kind,role,range,signature}:"),
+        "should have TOON header: {stdout}"
+    );
     assert!(stdout.contains("main,main,fn,definition,"));
     assert!(stdout.contains("resolve_root,resolve_root,fn,definition,"));
 }
@@ -86,15 +99,31 @@ fn overview_includes_line_ranges() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("{name,qualified,kind,role,range,signature}:"), "{stdout}");
-    assert!(stdout.contains("alpha,alpha,fn,definition,\"1-3\","), "{stdout}");
-    assert!(stdout.contains("beta,beta,fn,definition,\"5\","), "{stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("{name,qualified,kind,role,range,signature}:"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("alpha,alpha,fn,definition,\"1-3\","),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("beta,beta,fn,definition,\"5\","),
+        "{stdout}"
+    );
 }
 
 #[test]
 fn symbols_kind_fn() {
-    let out = cx().args(["symbols", "--kind", "fn", "--all"]).output().unwrap();
+    let out = cx()
+        .args(["symbols", "--kind", "fn", "--all"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success());
     assert!(stdout.contains("main,fn,"));
@@ -103,7 +132,10 @@ fn symbols_kind_fn() {
 
 #[test]
 fn definition_main() {
-    let out = cx().args(["definition", "--name", "main"]).output().unwrap();
+    let out = cx()
+        .args(["definition", "--name", "main"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success());
     assert!(stdout.contains("src/main.rs"), "{stdout}");
@@ -116,24 +148,35 @@ fn overview_nonexistent_exits_1() {
     let out = cx().args(["overview", "nonexistent.rs"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("nonexistent.rs"), "stderr should mention the file: {stderr}");
+    assert!(
+        stderr.contains("nonexistent.rs"),
+        "stderr should mention the file: {stderr}"
+    );
 }
 
 #[test]
 fn symbols_no_match_exits_0() {
-    let out = cx().args(["symbols", "--name", "zzz_no_match"]).output().unwrap();
+    let out = cx()
+        .args(["symbols", "--name", "zzz_no_match"])
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(0));
 }
 
 #[test]
 fn json_overview_uses_the_v1_envelope() {
-    let out = cx().args(["--json", "overview", "src/main.rs"]).output().unwrap();
+    let out = cx()
+        .args(["--json", "overview", "src/main.rs"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success());
-    let parsed: serde_json::Value = serde_json::from_str(&stdout)
-        .expect("should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
     // Phase 3: the root is an object for every command and every result count.
-    assert!(parsed.is_object(), "root must be the envelope object: {stdout}");
+    assert!(
+        parsed.is_object(),
+        "root must be the envelope object: {stdout}"
+    );
     assert_eq!(parsed["schema_version"].as_u64().unwrap(), 1);
     assert_eq!(parsed["query"]["kind"].as_str().unwrap(), "overview");
     assert!(!json_results(&stdout).is_empty());
@@ -141,13 +184,18 @@ fn json_overview_uses_the_v1_envelope() {
 
 #[test]
 fn json_definition_always_uses_the_envelope() {
-    let out = cx().args(["--json", "definition", "--name", "main"]).output().unwrap();
+    let out = cx()
+        .args(["--json", "definition", "--name", "main"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success());
-    let parsed: serde_json::Value = serde_json::from_str(&stdout)
-        .expect("should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
     // Same root object for a single result as for a truncated page.
-    assert!(parsed.is_object(), "definition JSON must be the envelope: {stdout}");
+    assert!(
+        parsed.is_object(),
+        "definition JSON must be the envelope: {stdout}"
+    );
     assert_eq!(parsed["query"]["kind"].as_str().unwrap(), "definition");
     assert_eq!(parsed["query"]["subject"].as_str().unwrap(), "main");
     assert_eq!(json_results(&stdout).len(), 1);
@@ -164,14 +212,24 @@ fn definition_from_disambiguates() {
     ]);
 
     // Without --from: should find both
-    let out = cx_in(dir.path()).args(["--json", "definition", "--name", "helper"]).output().unwrap();
+    let out = cx_in(dir.path())
+        .args(["--json", "definition", "--name", "helper"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(json_results(&stdout).len(), 2, "should find both: {stdout}");
 
     // With --from: should find only one
     let out2 = cx_in(dir.path())
-        .args(["--json", "definition", "--name", "helper", "--from", "src/a.rs"])
+        .args([
+            "--json",
+            "definition",
+            "--name",
+            "helper",
+            "--from",
+            "src/a.rs",
+        ])
         .output()
         .unwrap();
     let stdout2 = String::from_utf8_lossy(&out2.stdout);
@@ -201,8 +259,15 @@ fn definition_max_lines_truncates() {
     let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let rows = json_results(&stdout);
     let item = &rows[0];
-    assert_eq!(item["truncated"].as_bool(), Some(true), "should be truncated: {stdout}");
-    assert!(item["lines"].as_u64().unwrap() > 200, "should report total lines: {stdout}");
+    assert_eq!(
+        item["truncated"].as_bool(),
+        Some(true),
+        "should be truncated: {stdout}"
+    );
+    assert!(
+        item["lines"].as_u64().unwrap() > 200,
+        "should report total lines: {stdout}"
+    );
 }
 
 // --- Cache ---
@@ -212,9 +277,19 @@ fn cache_path_prints_path() {
     let dir = temp_project(&[("src/main.rs", "fn main() {}\n")]);
     let out = cx_in(dir.path()).args(["cache", "path"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("indexes/") || stdout.contains("indexes\\"), "should contain indexes path: {stdout}");
-    assert!(stdout.trim().ends_with(".db"), "should end with .db: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("indexes/") || stdout.contains("indexes\\"),
+        "should contain indexes path: {stdout}"
+    );
+    assert!(
+        stdout.trim().ends_with(".db"),
+        "should end with .db: {stdout}"
+    );
 }
 
 #[test]
@@ -222,27 +297,42 @@ fn cache_clean_removes_index() {
     let dir = temp_project(&[("src/main.rs", "fn main() {}\n")]);
 
     // Build the index first
-    let out = cx_in(dir.path()).args(["overview", "src/main.rs"]).output().unwrap();
+    let out = cx_in(dir.path())
+        .args(["overview", "src/main.rs"])
+        .output()
+        .unwrap();
     assert!(out.status.success());
 
     // Get the cache path
     let out = cx_in(dir.path()).args(["cache", "path"]).output().unwrap();
     let cache_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    assert!(std::path::Path::new(&cache_path).exists(), "index should exist after build");
+    assert!(
+        std::path::Path::new(&cache_path).exists(),
+        "index should exist after build"
+    );
 
     // Clean it
     let out = cx_in(dir.path()).args(["cache", "clean"]).output().unwrap();
     assert!(out.status.success());
-    assert!(!std::path::Path::new(&cache_path).exists(), "index should be gone after clean");
+    assert!(
+        !std::path::Path::new(&cache_path).exists(),
+        "index should be gone after clean"
+    );
 }
 
 #[test]
 fn index_not_in_repo_root() {
     let dir = temp_project(&[("src/main.rs", "fn main() {}\n")]);
-    let _ = cx_in(dir.path()).args(["overview", "src/main.rs"]).output().unwrap();
+    let _ = cx_in(dir.path())
+        .args(["overview", "src/main.rs"])
+        .output()
+        .unwrap();
 
     // No .cx-index.db in the repo root
-    assert!(!dir.path().join(".cx-index.db").exists(), "should not create .cx-index.db in repo root");
+    assert!(
+        !dir.path().join(".cx-index.db").exists(),
+        "should not create .cx-index.db in repo root"
+    );
 }
 
 // --- Version ---
@@ -262,10 +352,20 @@ fn markdown_overview_shows_headings() {
         ("README.md", "# Hello\nintro\n\n## Usage\nbody\n"),
         ("src/main.rs", "fn main() {}\n"),
     ]);
-    let out = cx_in(dir.path()).args(["overview", "README.md"]).output().unwrap();
-    assert!(out.status.success(), "overview README.md should succeed: {}", String::from_utf8_lossy(&out.stderr));
+    let out = cx_in(dir.path())
+        .args(["overview", "README.md"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "overview README.md should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("{name,qualified,kind,role,range,signature}:"), "{stdout}");
+    assert!(
+        stdout.contains("{name,qualified,kind,role,range,signature}:"),
+        "{stdout}"
+    );
     assert!(stdout.contains("Hello,\"\",heading,heading"), "{stdout}");
     assert!(stdout.contains("Usage,\"\",heading,heading"), "{stdout}");
 }
@@ -273,14 +373,21 @@ fn markdown_overview_shows_headings() {
 #[test]
 fn markdown_definition_returns_section() {
     let dir = temp_project(&[
-        ("README.md", "# Hello\nintro\n\n## Usage\nbody\n\n### Details\nmore\n\n## Install\nsteps\n"),
+        (
+            "README.md",
+            "# Hello\nintro\n\n## Usage\nbody\n\n### Details\nmore\n\n## Install\nsteps\n",
+        ),
         ("src/main.rs", "fn main() {}\n"),
     ]);
     let out = cx_in(dir.path())
         .args(["definition", "--name", "Usage", "--from", "README.md"])
         .output()
         .unwrap();
-    assert!(out.status.success(), "definition Usage should succeed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "definition Usage should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("## Usage\nbody"), "{stdout}");
     assert!(stdout.contains("### Details\nmore"), "{stdout}");
@@ -322,19 +429,23 @@ fn objc_overview_and_symbols() {
 
 #[test]
 fn no_matches_stderr() {
-    let out = cx().args(["definition", "--name", "zzz_nonexistent"]).output().unwrap();
+    let out = cx()
+        .args(["definition", "--name", "zzz_nonexistent"])
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(0));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("no matches"), "should print no matches: {stderr}");
+    assert!(
+        stderr.contains("no matches"),
+        "should print no matches: {stderr}"
+    );
 }
 
 // --- Definition --kind filter ---
 
 #[test]
 fn definition_kind_filter() {
-    let dir = temp_project(&[
-        ("src/lib.rs", "pub struct Foo;\npub fn Foo() {}\n"),
-    ]);
+    let dir = temp_project(&[("src/lib.rs", "pub struct Foo;\npub fn Foo() {}\n")]);
     let out = cx_in(dir.path())
         .args(["--json", "definition", "--name", "Foo", "--kind", "fn"])
         .output()
@@ -342,7 +453,11 @@ fn definition_kind_filter() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let arr = json_results(&stdout);
-    assert_eq!(arr.len(), 1, "should find only the fn, not the struct: {stdout}");
+    assert_eq!(
+        arr.len(),
+        1,
+        "should find only the fn, not the struct: {stdout}"
+    );
     assert!(arr[0]["body"].as_str().unwrap().contains("fn Foo()"));
 }
 
@@ -355,23 +470,41 @@ fn references_file_filter() {
         ("src/b.rs", "use crate::Foo;\nfn bar(f: Foo) {}\n"),
     ]);
     let out = cx_in(dir.path())
-        .args(["references", "--name", "Foo", "--file", "src/a.rs", "--context"])
+        .args([
+            "references",
+            "--name",
+            "Foo",
+            "--file",
+            "src/a.rs",
+            "--context",
+        ])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     // Should only contain src/a.rs references, not src/b.rs
-    assert!(stdout.contains("src/a.rs"), "should find refs in a.rs: {stdout}");
-    assert!(!stdout.contains("src/b.rs"), "should not include b.rs: {stdout}");
+    assert!(
+        stdout.contains("src/a.rs"),
+        "should find refs in a.rs: {stdout}"
+    );
+    assert!(
+        !stdout.contains("src/b.rs"),
+        "should not include b.rs: {stdout}"
+    );
 }
 
 // --- References dedup ---
 
 #[test]
 fn references_dedup_same_line() {
-    let dir = temp_project(&[
-        ("src/lib.rs", "fn convert(x: Foo) -> Foo { x }\npub struct Foo;\n"),
-    ]);
+    let dir = temp_project(&[(
+        "src/lib.rs",
+        "fn convert(x: Foo) -> Foo { x }\npub struct Foo;\n",
+    )]);
     let out = cx_in(dir.path())
         .args(["--json", "references", "--name", "Foo", "--context"])
         .output()
@@ -381,13 +514,20 @@ fn references_dedup_same_line() {
     let arr = json_results(&stdout);
     // Line 1 has Foo twice (param + return), should be deduped to one entry
     let line1_refs: Vec<_> = arr.iter().filter(|r| r["line"] == 1).collect();
-    assert_eq!(line1_refs.len(), 1, "same-line refs should be deduped: {stdout}");
+    assert_eq!(
+        line1_refs.len(),
+        1,
+        "same-line refs should be deduped: {stdout}"
+    );
 }
 
 #[test]
 fn references_summary_groups_by_file() {
     let dir = temp_project(&[
-        ("src/a.rs", "pub struct Foo;\nfn use1(f: Foo) {}\nfn use2(f: Foo) {}\n"),
+        (
+            "src/a.rs",
+            "pub struct Foo;\nfn use1(f: Foo) {}\nfn use2(f: Foo) {}\n",
+        ),
         ("src/b.rs", "use crate::Foo;\nfn use3(f: Foo) {}\n"),
     ]);
 
@@ -404,7 +544,11 @@ fn references_summary_groups_by_file() {
         .expect("summary should include src/a.rs");
 
     assert_eq!(a["refs"].as_u64().unwrap(), 3, "{stdout}");
-    assert_eq!(a["callers"].as_str().unwrap(), "Foo, use1, use2", "{stdout}");
+    assert_eq!(
+        a["callers"].as_str().unwrap(),
+        "Foo, use1, use2",
+        "{stdout}"
+    );
     assert_eq!(a["lines"].as_str().unwrap(), "1, 2, 3", "{stdout}");
     assert!(arr.iter().any(|row| row["file"] == "src/b.rs"), "{stdout}");
 }
@@ -419,15 +563,34 @@ fn overview_directory_single_level() {
         ("src/util/helpers.rs", "pub fn help() {}\n"),
         ("src/util/math.rs", "pub fn add() {}\npub fn sub() {}\n"),
     ]);
-    let out = cx_in(dir.path()).args(["overview", "src/"]).output().unwrap();
+    let out = cx_in(dir.path())
+        .args(["overview", "src/"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     // Should show util/ as a subdirectory, not individual files inside it
-    assert!(stdout.contains("util/"), "should group util as subdir: {stdout}");
-    assert!(!stdout.contains("helpers.rs"), "should not show nested files: {stdout}");
+    assert!(
+        stdout.contains("util/"),
+        "should group util as subdir: {stdout}"
+    );
+    assert!(
+        !stdout.contains("helpers.rs"),
+        "should not show nested files: {stdout}"
+    );
     // Direct files should be listed
-    assert!(stdout.contains("main.rs"), "should show direct file: {stdout}");
-    assert!(stdout.contains("lib.rs"), "should show direct file: {stdout}");
+    assert!(
+        stdout.contains("main.rs"),
+        "should show direct file: {stdout}"
+    );
+    assert!(
+        stdout.contains("lib.rs"),
+        "should show direct file: {stdout}"
+    );
 }
 
 #[test]
@@ -444,8 +607,15 @@ fn overview_directory_full_keeps_table_shape_with_ranges() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("{file,name,kind,range,signature}:"), "{stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("{file,name,kind,range,signature}:"),
+        "{stdout}"
+    );
     assert!(stdout.contains("src/util/"), "{stdout}");
     assert!(stdout.contains("src/lib.rs,hello,fn,\"1\""), "{stdout}");
 }
@@ -458,8 +628,15 @@ fn overview_directory_root() {
     ]);
     let out = cx_in(dir.path()).args(["overview", "."]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("src/"), "should show src as subdir: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("src/"),
+        "should show src as subdir: {stdout}"
+    );
 }
 
 #[test]
@@ -470,12 +647,25 @@ fn overview_parent_path_switches_root_from_nested_repo() {
     ]);
     std::fs::create_dir(dir.path().join("child/.git")).unwrap();
 
-    let out = cx_in(&dir.path().join("child")).args(["overview", "../"]).output().unwrap();
+    let out = cx_in(&dir.path().join("child"))
+        .args(["overview", "../"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("src/"), "should show parent project src dir: {stdout}");
-    assert!(stdout.contains("child/"), "should show child dir under parent root: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("src/"),
+        "should show parent project src dir: {stdout}"
+    );
+    assert!(
+        stdout.contains("child/"),
+        "should show child dir under parent root: {stdout}"
+    );
 }
 
 #[test]
@@ -492,8 +682,15 @@ fn explicit_root_accepts_relative_parent_overview_path() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("src/"), "should show parent project src dir: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("src/"),
+        "should show parent project src dir: {stdout}"
+    );
 }
 
 #[test]
@@ -509,9 +706,19 @@ fn explicit_relative_root_is_normalized() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("lib.rs"), "should describe cwd relative to normalized root: {stdout}");
-    assert!(stdout.contains("nested/"), "should include nested src dir: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("lib.rs"),
+        "should describe cwd relative to normalized root: {stdout}"
+    );
+    assert!(
+        stdout.contains("nested/"),
+        "should include nested src dir: {stdout}"
+    );
 }
 
 #[test]
@@ -527,9 +734,19 @@ fn overview_accepts_dotdot_path_to_sibling_directory() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("alpha"), "should find symbols through normalized path: {stdout}");
-    assert!(stdout.contains("gamma"), "should find sibling file through normalized path: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("alpha"),
+        "should find symbols through normalized path: {stdout}"
+    );
+    assert!(
+        stdout.contains("gamma"),
+        "should find sibling file through normalized path: {stdout}"
+    );
 }
 
 #[test]
@@ -542,31 +759,71 @@ fn overview_directory_includes_tests_by_default() {
     // Root overview should include tests/ subdir
     let out = cx_in(dir.path()).args(["overview", "."]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("tests/"), "should include test dirs: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("tests/"),
+        "should include test dirs: {stdout}"
+    );
 
     // Drilling into src/ should include test files
-    let out = cx_in(dir.path()).args(["overview", "src/"]).output().unwrap();
+    let out = cx_in(dir.path())
+        .args(["overview", "src/"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("app.test.ts"), "should include test files: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("app.test.ts"),
+        "should include test files: {stdout}"
+    );
 
     // --no-tests should exclude both
-    let out = cx_in(dir.path()).args(["overview", ".", "--no-tests"]).output().unwrap();
+    let out = cx_in(dir.path())
+        .args(["overview", ".", "--no-tests"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(!stdout.contains("tests/"), "--no-tests should filter test dirs: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !stdout.contains("tests/"),
+        "--no-tests should filter test dirs: {stdout}"
+    );
 
-    let out = cx_in(dir.path()).args(["overview", "src/", "--no-tests"]).output().unwrap();
+    let out = cx_in(dir.path())
+        .args(["overview", "src/", "--no-tests"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(!stdout.contains("app.test.ts"), "--no-tests should filter test files: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !stdout.contains("app.test.ts"),
+        "--no-tests should filter test files: {stdout}"
+    );
 }
 
 #[test]
 fn overview_directory_nonexistent() {
     let dir = temp_project(&[("src/main.rs", "fn main() {}\n")]);
-    let out = cx_in(dir.path()).args(["overview", "nonexistent/"]).output().unwrap();
+    let out = cx_in(dir.path())
+        .args(["overview", "nonexistent/"])
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(1));
 }
 
@@ -574,7 +831,10 @@ fn overview_directory_nonexistent() {
 
 #[test]
 fn json_definition_has_expected_fields() {
-    let out = cx().args(["--json", "definition", "--name", "main"]).output().unwrap();
+    let out = cx()
+        .args(["--json", "definition", "--name", "main"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let rows = json_results(&stdout);
@@ -604,7 +864,10 @@ fn definition_default_limit_truncates() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     // Should be paginated JSON (object with total/results)
-    assert!(parsed.is_object(), "paginated output should be an object: {stdout}");
+    assert!(
+        parsed.is_object(),
+        "paginated output should be an object: {stdout}"
+    );
     assert_eq!(parsed["page"]["total"].as_u64().unwrap(), 5);
     assert_eq!(parsed["results"].as_array().unwrap().len(), 3);
 
@@ -637,7 +900,10 @@ fn definition_default_limit_truncates() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&toon.stderr);
     assert!(stderr.contains("3/5"), "should show 3/5 in hint: {stderr}");
-    assert!(stderr.contains("--offset 3"), "should suggest next offset: {stderr}");
+    assert!(
+        stderr.contains("--offset 3"),
+        "should suggest next offset: {stderr}"
+    );
     assert!(stderr.contains("--all"), "should suggest --all: {stderr}");
 }
 
@@ -658,7 +924,10 @@ fn definition_offset_paginates() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert!(parsed.is_object(), "offset > 0 should produce paginated envelope: {stdout}");
+    assert!(
+        parsed.is_object(),
+        "offset > 0 should produce paginated envelope: {stdout}"
+    );
     assert_eq!(parsed["page"]["total"].as_u64().unwrap(), 5);
     assert_eq!(parsed["page"]["offset"].as_u64().unwrap(), 3);
     assert_eq!(parsed["results"].as_array().unwrap().len(), 2);
@@ -681,7 +950,10 @@ fn definition_all_bypasses_limit() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     // --all means no limit, and the envelope says so explicitly.
-    assert!(parsed["page"]["limit"].is_null(), "--all must report no limit: {stdout}");
+    assert!(
+        parsed["page"]["limit"].is_null(),
+        "--all must report no limit: {stdout}"
+    );
     assert!(!parsed["page"]["truncated"].as_bool().unwrap());
     assert_eq!(json_results(&stdout).len(), 5);
 }
@@ -692,7 +964,10 @@ fn definition_from_skips_default_limit() {
     // Default definition limit is 3, so without --from we'd get truncated.
     // With --from, all 5 from a.rs should be returned (proving limit is bypassed).
     let dir = temp_project(&[
-        ("src/a.rs", "pub fn thing() { 1 }\npub fn thing2() { 2 }\nstruct thing3;\nstruct thing4;\nenum thing5 {}\n"),
+        (
+            "src/a.rs",
+            "pub fn thing() { 1 }\npub fn thing2() { 2 }\nstruct thing3;\nstruct thing4;\nenum thing5 {}\n",
+        ),
         ("src/b.rs", "pub fn thing() { 10 }\n"),
         ("src/c.rs", "pub fn thing() { 20 }\n"),
         ("src/d.rs", "pub fn thing() { 30 }\n"),
@@ -702,13 +977,23 @@ fn definition_from_skips_default_limit() {
     // With --from src/a.rs: should return only the 1 match in a.rs (exact name match)
     // but crucially, without a default limit being applied
     let out = cx_in(dir.path())
-        .args(["--json", "definition", "--name", "thing", "--from", "src/a.rs"])
+        .args([
+            "--json",
+            "definition",
+            "--name",
+            "thing",
+            "--from",
+            "src/a.rs",
+        ])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     // --from disables the default limit, which the envelope reports as null.
-    assert!(parsed["page"]["limit"].is_null(), "--from must not apply a limit: {stdout}");
+    assert!(
+        parsed["page"]["limit"].is_null(),
+        "--from must not apply a limit: {stdout}"
+    );
     assert!(!parsed["page"]["truncated"].as_bool().unwrap());
     let arr = json_results(&stdout);
     assert_eq!(arr.len(), 1);
@@ -721,7 +1006,10 @@ fn definition_from_skips_default_limit() {
         .unwrap();
     let stdout2 = String::from_utf8_lossy(&out2.stdout);
     let parsed2: serde_json::Value = serde_json::from_str(&stdout2).unwrap();
-    assert!(parsed2.is_object(), "without --from should be paginated: {stdout2}");
+    assert!(
+        parsed2.is_object(),
+        "without --from should be paginated: {stdout2}"
+    );
     assert_eq!(parsed2["page"]["total"].as_u64().unwrap(), 5);
     assert_eq!(parsed2["results"].as_array().unwrap().len(), 3);
 }
@@ -761,18 +1049,32 @@ fn symbols_pagination_hint_on_stderr() {
     assert!(out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("2/4"), "should show 2/4: {stderr}");
-    assert!(stderr.contains("--offset 2"), "should suggest next offset: {stderr}");
+    assert!(
+        stderr.contains("--offset 2"),
+        "should suggest next offset: {stderr}"
+    );
 }
 
 #[test]
 fn references_pagination() {
     let dir = temp_project(&[
-        ("src/a.rs", "pub struct Foo;\nfn use1(f: Foo) {}\nfn use2(f: Foo) {}\n"),
+        (
+            "src/a.rs",
+            "pub struct Foo;\nfn use1(f: Foo) {}\nfn use2(f: Foo) {}\n",
+        ),
         ("src/b.rs", "use crate::Foo;\nfn use3(f: Foo) {}\n"),
     ]);
 
     let out = cx_in(dir.path())
-        .args(["--json", "--limit", "2", "references", "--name", "Foo", "--context"])
+        .args([
+            "--json",
+            "--limit",
+            "2",
+            "references",
+            "--name",
+            "Foo",
+            "--context",
+        ])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -800,10 +1102,22 @@ fn json_paginated_has_metadata() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert!(parsed["page"]["total"].is_number(), "should have total: {stdout}");
-    assert!(parsed["page"]["offset"].is_number(), "should have offset: {stdout}");
-    assert!(parsed["page"]["limit"].is_number(), "should have limit: {stdout}");
-    assert!(parsed["results"].is_array(), "should have results: {stdout}");
+    assert!(
+        parsed["page"]["total"].is_number(),
+        "should have total: {stdout}"
+    );
+    assert!(
+        parsed["page"]["offset"].is_number(),
+        "should have offset: {stdout}"
+    );
+    assert!(
+        parsed["page"]["limit"].is_number(),
+        "should have limit: {stdout}"
+    );
+    assert!(
+        parsed["results"].is_array(),
+        "should have results: {stdout}"
+    );
     assert_eq!(parsed["page"]["offset"].as_u64().unwrap(), 0);
     assert_eq!(parsed["page"]["limit"].as_u64().unwrap(), 2);
 }
@@ -811,7 +1125,10 @@ fn json_paginated_has_metadata() {
 #[test]
 fn complete_result_set_reports_no_truncation() {
     // Single match — same envelope, with truncated=false and no next_queries.
-    let out = cx().args(["--json", "definition", "--name", "main"]).output().unwrap();
+    let out = cx()
+        .args(["--json", "definition", "--name", "main"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert!(parsed.is_object(), "root is always the envelope: {stdout}");
@@ -842,8 +1159,15 @@ fn symbols_file_accepts_dotdot_path() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("alpha"), "should find symbol through normalized file path: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("alpha"),
+        "should find symbol through normalized file path: {stdout}"
+    );
 }
 
 #[test]
@@ -855,8 +1179,15 @@ fn definition_from_accepts_dotdot_path() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("pub fn alpha()"), "should find definition through normalized from path: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("pub fn alpha()"),
+        "should find definition through normalized from path: {stdout}"
+    );
 }
 
 #[test]
@@ -866,47 +1197,100 @@ fn references_file_accepts_dotdot_path() {
         ("src/b.rs", "use crate::Foo;\nfn bar(f: Foo) {}\n"),
     ]);
     let out = cx_in(&dir.path().join("src"))
-        .args(["references", "--name", "Foo", "--file", "../src/a.rs", "--context"])
+        .args([
+            "references",
+            "--name",
+            "Foo",
+            "--file",
+            "../src/a.rs",
+            "--context",
+        ])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("src/a.rs"), "should find refs through normalized file path: {stdout}");
-    assert!(!stdout.contains("src/b.rs"), "should not include unselected file: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("src/a.rs"),
+        "should find refs through normalized file path: {stdout}"
+    );
+    assert!(
+        !stdout.contains("src/b.rs"),
+        "should not include unselected file: {stdout}"
+    );
 }
 
 #[test]
 fn symbols_file_directory_returns_all_files_in_dir() {
     let dir = dir_project();
-    let out = cx_in(dir.path()).args(["symbols", "--kind", "fn", "--file", "src"]).output().unwrap();
+    let out = cx_in(dir.path())
+        .args(["symbols", "--kind", "fn", "--file", "src"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("alpha"), "should find alpha in src/: {stdout}");
-    assert!(stdout.contains("gamma"), "should find gamma in src/: {stdout}");
-    assert!(!stdout.contains("test_alpha"), "should not include tests/: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("alpha"),
+        "should find alpha in src/: {stdout}"
+    );
+    assert!(
+        stdout.contains("gamma"),
+        "should find gamma in src/: {stdout}"
+    );
+    assert!(
+        !stdout.contains("test_alpha"),
+        "should not include tests/: {stdout}"
+    );
 }
 
 #[test]
 fn symbols_file_directory_shows_file_column() {
     let dir = dir_project();
-    let out = cx_in(dir.path()).args(["--json", "symbols", "--kind", "fn", "--file", "src"]).output().unwrap();
+    let out = cx_in(dir.path())
+        .args(["--json", "symbols", "--kind", "fn", "--file", "src"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let arr = json_results(&stdout);
-    assert!(arr.iter().all(|r| r.get("file").is_some()), "directory query should include file column: {stdout}");
+    assert!(
+        arr.iter().all(|r| r.get("file").is_some()),
+        "directory query should include file column: {stdout}"
+    );
 }
 
 #[test]
 fn symbols_file_single_file_hides_file_column() {
     let dir = dir_project();
-    let out = cx_in(dir.path()).args(["--json", "symbols", "--kind", "fn", "--file", "src/lib.rs"]).output().unwrap();
+    let out = cx_in(dir.path())
+        .args(["--json", "symbols", "--kind", "fn", "--file", "src/lib.rs"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let arr = json_results(&stdout);
-    assert!(arr.iter().all(|r| r.get("file").is_none()), "single-file query should omit file column: {stdout}");
+    assert!(
+        arr.iter().all(|r| r.get("file").is_none()),
+        "single-file query should omit file column: {stdout}"
+    );
 }
 
 #[test]
@@ -917,55 +1301,115 @@ fn cpp_declaration_only_header_at_nested_path() {
     )]);
 
     let out = cx_in(dir.path())
-        .args(["overview", "GuideModule/algorithm/Guide2DLineDemoAlgorithm.h"])
+        .args([
+            "overview",
+            "GuideModule/algorithm/Guide2DLineDemoAlgorithm.h",
+        ])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("Guide2DLineDemoAlgorithm,Guide2DLineDemoAlgorithm,class"), "should find class: {stdout}");
-    assert!(stdout.contains("AlgorithmId,\"Guide2DLineDemoAlgorithm::AlgorithmId\",fn"), "should find declared method: {stdout}");
-    assert!(stdout.contains("Validate,\"Guide2DLineDemoAlgorithm::Validate\",fn"), "should find declared method: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("Guide2DLineDemoAlgorithm,Guide2DLineDemoAlgorithm,class"),
+        "should find class: {stdout}"
+    );
+    assert!(
+        stdout.contains("AlgorithmId,\"Guide2DLineDemoAlgorithm::AlgorithmId\",fn"),
+        "should find declared method: {stdout}"
+    );
+    assert!(
+        stdout.contains("Validate,\"Guide2DLineDemoAlgorithm::Validate\",fn"),
+        "should find declared method: {stdout}"
+    );
 
     let out = cx_in(dir.path())
-        .args(["symbols", "--file", "GuideModule/algorithm/Guide2DLineDemoAlgorithm.h"])
+        .args([
+            "symbols",
+            "--file",
+            "GuideModule/algorithm/Guide2DLineDemoAlgorithm.h",
+        ])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("Guide2DLineDemoAlgorithm,Guide2DLineDemoAlgorithm,class"), "should find class: {stdout}");
-    assert!(stdout.contains("AlgorithmId,\"Guide2DLineDemoAlgorithm::AlgorithmId\",fn"), "should find declared method: {stdout}");
-    assert!(stdout.contains("Validate,\"Guide2DLineDemoAlgorithm::Validate\",fn"), "should find declared method: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("Guide2DLineDemoAlgorithm,Guide2DLineDemoAlgorithm,class"),
+        "should find class: {stdout}"
+    );
+    assert!(
+        stdout.contains("AlgorithmId,\"Guide2DLineDemoAlgorithm::AlgorithmId\",fn"),
+        "should find declared method: {stdout}"
+    );
+    assert!(
+        stdout.contains("Validate,\"Guide2DLineDemoAlgorithm::Validate\",fn"),
+        "should find declared method: {stdout}"
+    );
 }
 
 #[test]
 fn references_file_directory() {
     let dir = dir_project();
-    let out = cx_in(dir.path()).args(["references", "--name", "alpha", "--file", "src"]).output().unwrap();
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = cx_in(dir.path())
+        .args(["references", "--name", "alpha", "--file", "src"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
 fn kind_counts_file_directory() {
     let dir = dir_project();
-    let out = cx_in(dir.path()).args(["symbols", "--kinds", "--file", "src"]).output().unwrap();
+    let out = cx_in(dir.path())
+        .args(["symbols", "--kinds", "--file", "src"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(stdout.contains("fn"), "should list fn kind: {stdout}");
 }
 
 #[test]
 fn definition_from_directory() {
     let dir = dir_project();
-    let out = cx_in(dir.path()).args(["definition", "--name", "alpha", "--from", "src"]).output().unwrap();
+    let out = cx_in(dir.path())
+        .args(["definition", "--name", "alpha", "--from", "src"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("alpha"), "should find alpha from src/: {stdout}");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("alpha"),
+        "should find alpha from src/: {stdout}"
+    );
 }
 
 #[test]
 fn symbols_file_nonexistent_directory() {
     let dir = dir_project();
-    let out = cx_in(dir.path()).args(["symbols", "--file", "nonexistent"]).output().unwrap();
+    let out = cx_in(dir.path())
+        .args(["symbols", "--file", "nonexistent"])
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(1));
 }
 
@@ -973,19 +1417,35 @@ fn symbols_file_nonexistent_directory() {
 fn symbols_file_empty_directory() {
     let dir = dir_project();
     std::fs::create_dir(dir.path().join("empty")).unwrap();
-    let out = cx_in(dir.path()).args(["symbols", "--file", "empty"]).output().unwrap();
+    let out = cx_in(dir.path())
+        .args(["symbols", "--file", "empty"])
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("no indexed files under"), "should report empty dir: {stderr}");
+    assert!(
+        stderr.contains("no indexed files under"),
+        "should report empty dir: {stderr}"
+    );
 }
 
 #[test]
 fn overview_directory_from_subdirectory() {
     let dir = dir_project();
-    let out = cx_in(&dir.path().join("src")).args(["overview", "."]).output().unwrap();
+    let out = cx_in(&dir.path().join("src"))
+        .args(["overview", "."])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "overview from subdir should work: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("alpha") || stdout.contains("lib.rs"), "should find files in src/: {stdout}");
+    assert!(
+        out.status.success(),
+        "overview from subdir should work: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("alpha") || stdout.contains("lib.rs"),
+        "should find files in src/: {stdout}"
+    );
 }
 
 // --- Cross-project root resolution ---
@@ -1000,9 +1460,19 @@ fn overview_absolute_path_resolves_foreign_project() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "should succeed: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("beta.ts"), "should find B's files: {stdout}");
-    assert!(!stdout.contains("alpha.rs"), "should not find A's files: {stdout}");
+    assert!(
+        out.status.success(),
+        "should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("beta.ts"),
+        "should find B's files: {stdout}"
+    );
+    assert!(
+        !stdout.contains("alpha.rs"),
+        "should not find A's files: {stdout}"
+    );
 }
 
 #[test]
@@ -1014,7 +1484,11 @@ fn overview_absolute_file_resolves_foreign_project() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "should succeed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     // B's shared has body "{ 2 }", A's has "{ 1 }" — check we get B's symbols
     assert!(stdout.contains("shared"), "should find shared fn: {stdout}");
 }
@@ -1028,9 +1502,15 @@ fn symbols_absolute_file_resolves_foreign_project() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "should succeed: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("betaFn") || stdout.contains("BetaClass"),
-        "should find B's symbols: {stdout}");
+    assert!(
+        out.status.success(),
+        "should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("betaFn") || stdout.contains("BetaClass"),
+        "should find B's symbols: {stdout}"
+    );
 }
 
 #[test]
@@ -1038,17 +1518,30 @@ fn definition_absolute_from_resolves_foreign_project() {
     let (a, b) = two_projects();
     let b_file = b.path().join("src/shared.rs");
     let out = cx_in(a.path())
-        .args(["--json", "definition", "--name", "shared", "--from", b_file.to_str().unwrap()])
+        .args([
+            "--json",
+            "definition",
+            "--name",
+            "shared",
+            "--from",
+            b_file.to_str().unwrap(),
+        ])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "should succeed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let arr = json_results(&stdout);
     assert_eq!(arr.len(), 1);
     // B's shared() has "{ 2 }" in the body
-    assert!(arr[0]["body"].as_str().unwrap().contains("2"),
-        "should get B's definition, not A's: {stdout}");
+    assert!(
+        arr[0]["body"].as_str().unwrap().contains("2"),
+        "should get B's definition, not A's: {stdout}"
+    );
 }
 
 #[test]
@@ -1056,25 +1549,39 @@ fn references_absolute_file_resolves_foreign_project() {
     let (a, b) = two_projects();
     let b_file = b.path().join("src/shared.rs");
     let out = cx_in(a.path())
-        .args(["references", "--name", "shared", "--file", b_file.to_str().unwrap()])
+        .args([
+            "references",
+            "--name",
+            "shared",
+            "--file",
+            b_file.to_str().unwrap(),
+        ])
         .output()
         .unwrap();
     // Just needs to not fail — the important thing is it doesn't error with
     // "no indexed files" due to wrong root
-    assert!(out.status.success(), "should succeed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
 fn relative_path_still_uses_cwd_project() {
     let (a, _b) = two_projects();
     // CWD is project A, relative path — should use A's root as before
-    let out = cx_in(a.path())
-        .args(["overview", "src/"])
-        .output()
-        .unwrap();
+    let out = cx_in(a.path()).args(["overview", "src/"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "relative paths should still work: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("alpha.rs"), "should find A's files: {stdout}");
+    assert!(
+        out.status.success(),
+        "relative paths should still work: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("alpha.rs"),
+        "should find A's files: {stdout}"
+    );
 }
 
 #[test]
@@ -1087,7 +1594,10 @@ fn no_path_arg_uses_cwd_project() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success());
-    assert!(stdout.contains("alpha_fn"), "should find A's symbols: {stdout}");
+    assert!(
+        stdout.contains("alpha_fn"),
+        "should find A's symbols: {stdout}"
+    );
 }
 
 #[test]
@@ -1097,9 +1607,17 @@ fn explicit_root_overrides_path_hint() {
     // --root should win — so it should fail to find B's files.
     let b_src = b.path().join("src");
     let out = cx_in(a.path())
-        .args(["--root", a.path().to_str().unwrap(), "overview", b_src.to_str().unwrap()])
+        .args([
+            "--root",
+            a.path().to_str().unwrap(),
+            "overview",
+            b_src.to_str().unwrap(),
+        ])
         .output()
         .unwrap();
     // Should fail because B's path isn't under A's root
-    assert!(!out.status.success(), "--root should override path-based discovery");
+    assert!(
+        !out.status.success(),
+        "--root should override path-based discovery"
+    );
 }

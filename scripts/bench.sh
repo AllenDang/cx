@@ -46,7 +46,11 @@ fi
 trap 'rm -rf "$BENCH_CACHE"' EXIT
 export CX_CACHE_DIR="$BENCH_CACHE"
 
-cx() { "$CX_BIN" --root "$PROJECT" "$@"; }
+# Path arguments are resolved relative to the process cwd, so every query runs
+# with the project as cwd.  Without this, benchmarking a project other than the
+# current directory makes `overview .` point outside the root, the query exits 1,
+# and `set -e` aborts the whole warm section silently.
+cx() { (cd "$PROJECT" && "$CX_BIN" --root "$PROJECT" "$@"); }
 
 drop_index() { rm -rf "$BENCH_CACHE/indexes"; }
 
@@ -123,13 +127,21 @@ SUBJECT="$(cx --json symbols --kind fn --limit 1 2>/dev/null | first_field name 
 warm "definition ($SUBJECT)" definition --name "$SUBJECT"
 warm "references ($SUBJECT)" references --name "$SUBJECT"
 warm "symbol-search      " symbols --name '*init*'
+# map and the relation queries are the corpus-scale commands: map resolves every
+# import in the project and the relation queries parse every file that mentions
+# the subject.  Benchmarking them only on a small repo hid a 3.4 s regression on
+# a 3,905-file corpus, so they are measured here explicitly.
+warm "map-depth-1        " map --depth 1
+warm "map-depth-2        " map --depth 2
+warm "callers ($SUBJECT)" callers --name "$SUBJECT"
+warm "callees ($SUBJECT)" callees --name "$SUBJECT"
 echo
 
 echo "== incremental refresh =="
 TARGET="$TARGET_FILE"
 if [[ -n "$TARGET" && "$TARGET" != "." && -f "$PROJECT/$TARGET" ]]; then
     printf '\n' >>"$PROJECT/$TARGET"
-    timed "one-file-refresh" "$CX_BIN" --root "$PROJECT" overview "$TARGET"
+    timed "one-file-refresh" /bin/sh -c 'cd "$1" && shift && exec "$@"' _ "$PROJECT" "$CX_BIN" --root "$PROJECT" overview "$TARGET"
     # Restore the file byte-for-byte.
     python3 - "$PROJECT/$TARGET" <<'PY'
 import sys

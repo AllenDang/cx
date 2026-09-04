@@ -7,7 +7,7 @@
 //! cannot be resolved is counted as external or ambiguous, never turned into a
 //! guessed edge.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -23,13 +23,75 @@ const ROW_LIST_LIMIT: usize = 5;
 /// Without this, ranking and API samples are dominated by `run`, `get`, `name`
 /// and friends — the failure mode called out in roadmap §8.
 const LOW_INFORMATION_NAMES: &[&str] = &[
-    "add", "apply", "args", "begin", "build", "call", "clear", "clone", "close", "config",
-    "context", "count", "ctx", "data", "default", "drop", "empty", "end", "eq", "error",
-    "execute", "fmt", "from", "get", "handle", "hash", "id", "index", "init", "into", "invoke",
-    "item", "key", "kind", "len", "list", "log", "main", "map", "name", "new", "next", "node",
-    "ok", "open", "options", "params", "parse", "print", "process", "read", "remove", "reset",
-    "result", "run", "set", "size", "start", "state", "status", "stop", "str", "string", "to",
-    "to_string", "type", "update", "value", "write",
+    "add",
+    "apply",
+    "args",
+    "begin",
+    "build",
+    "call",
+    "clear",
+    "clone",
+    "close",
+    "config",
+    "context",
+    "count",
+    "ctx",
+    "data",
+    "default",
+    "drop",
+    "empty",
+    "end",
+    "eq",
+    "error",
+    "execute",
+    "fmt",
+    "from",
+    "get",
+    "handle",
+    "hash",
+    "id",
+    "index",
+    "init",
+    "into",
+    "invoke",
+    "item",
+    "key",
+    "kind",
+    "len",
+    "list",
+    "log",
+    "main",
+    "map",
+    "name",
+    "new",
+    "next",
+    "node",
+    "ok",
+    "open",
+    "options",
+    "params",
+    "parse",
+    "print",
+    "process",
+    "read",
+    "remove",
+    "reset",
+    "result",
+    "run",
+    "set",
+    "size",
+    "start",
+    "state",
+    "status",
+    "stop",
+    "str",
+    "string",
+    "to",
+    "to_string",
+    "type",
+    "update",
+    "value",
+    "write",
 ];
 
 /// What a path is, by convention (roadmap §8 filters).
@@ -55,12 +117,31 @@ impl PathClass {
 }
 
 const VENDOR_DIRS: &[&str] = &[
-    "vendor", "vendored", "third_party", "thirdparty", "3rdparty", "node_modules", "external",
-    "extern", "deps", "site-packages", ".venv", "venv", "bundle",
+    "vendor",
+    "vendored",
+    "third_party",
+    "thirdparty",
+    "3rdparty",
+    "node_modules",
+    "external",
+    "extern",
+    "deps",
+    "site-packages",
+    ".venv",
+    "venv",
+    "bundle",
 ];
 
 const GENERATED_DIRS: &[&str] = &[
-    "generated", "gen", "autogen", "build", "dist", "out", "target", "__pycache__", ".next",
+    "generated",
+    "gen",
+    "autogen",
+    "build",
+    "dist",
+    "out",
+    "target",
+    "__pycache__",
+    ".next",
 ];
 
 const DOC_DIRS: &[&str] = &["docs", "doc", "documentation"];
@@ -81,7 +162,10 @@ pub fn classify(path: &Path) -> PathClass {
     if components.iter().any(|c| VENDOR_DIRS.contains(&c.as_str())) {
         return PathClass::Vendor;
     }
-    if components.iter().any(|c| GENERATED_DIRS.contains(&c.as_str())) {
+    if components
+        .iter()
+        .any(|c| GENERATED_DIRS.contains(&c.as_str()))
+    {
         return PathClass::Generated;
     }
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -116,80 +200,123 @@ pub(crate) enum Resolved {
     Ambiguous,
 }
 
-/// Resolve an import target to an indexed file, by path only.
+/// Pre-built path lookup that turns import resolution into a hash lookup.
 ///
-/// Deliberately syntactic: C/C++ include paths and TypeScript relative
-/// specifiers are written paths, so matching them against indexed paths is a
-/// fact. Rust module paths are matched against the conventional file layout and
-/// are reported as external when that layout does not apply.
-pub(crate) fn resolve_import(
-    importer: &Path,
-    import: &str,
-    language: &str,
-    indexed: &BTreeSet<&PathBuf>,
-) -> Resolved {
-    let candidates: Vec<String> = match language {
-        "c" | "cpp" => {
-            // Suffix match: `#include "ange/ecs.hpp"` may live under any include root.
-            let matches: Vec<&PathBuf> = indexed
-                .iter()
-                .filter(|p| {
-                    let text = p.to_string_lossy().replace('\\', "/");
-                    text == import || text.ends_with(&format!("/{import}"))
-                })
-                .copied()
-                .collect();
-            return match matches.len() {
-                0 => Resolved::External,
-                1 => Resolved::File(matches[0].clone()),
-                _ => Resolved::Ambiguous,
-            };
-        }
-        "typescript" => {
-            if !import.starts_with('.') {
-                // Bare specifier: a package, not a file in this project.
-                return Resolved::External;
-            }
-            let base = importer.parent().unwrap_or(Path::new(""));
-            let joined = crate::util::path::lexical_join(base, import);
-            let stem = joined.to_string_lossy().replace('\\', "/");
-            ["ts", "tsx", "js", "jsx"]
-                .iter()
-                .map(|ext| format!("{stem}.{ext}"))
-                .chain(
-                    ["ts", "tsx", "js", "jsx"]
-                        .iter()
-                        .map(|ext| format!("{stem}/index.{ext}")),
-                )
-                .collect()
-        }
-        "rust" => {
-            let Some(rest) = import.strip_prefix("crate::") else {
-                // `std::`, an external crate, or a `self::`/`super::` form the
-                // conventional layout cannot pin down.
-                return Resolved::External;
-            };
-            let segments: Vec<&str> = rest.split("::").collect();
-            let mut candidates = Vec::new();
-            // `crate::a::b::Item` may live in a/b.rs, a/b/mod.rs, or a.rs.
-            for take in (1..=segments.len()).rev() {
-                let joined = segments[..take].join("/");
-                candidates.push(format!("src/{joined}.rs"));
-                candidates.push(format!("src/{joined}/mod.rs"));
-                candidates.push(format!("{joined}.rs"));
-            }
-            candidates
-        }
-        _ => return Resolved::External,
-    };
+/// Built once per command from the exact path set the caller wants to resolve
+/// against.  The previous implementation scanned every indexed path for every
+/// import and allocated two `String`s per (import, path) pair, which on the
+/// fixed ANGE corpus meant 6,229 imports x 3,905 files and a 3.4 s `map`.
+///
+/// The three outcomes are unchanged: an include that matches nothing is
+/// `External`, one that matches exactly one file is `File`, and one that matches
+/// several is `Ambiguous` with no target chosen.
+pub(crate) struct ImportIndex {
+    /// Every component-boundary suffix of every path, mapped to the files ending
+    /// with it.  A suffix shared by several files is exactly what makes an
+    /// include ambiguous, so the shared entry *is* the ambiguity evidence.
+    by_suffix: HashMap<String, Vec<PathBuf>>,
+    /// Normalized full path -> file, for languages that resolve by constructing
+    /// a complete candidate path and taking the first that exists.
+    by_path: HashMap<String, PathBuf>,
+}
 
-    for candidate in candidates {
-        let as_path = PathBuf::from(&candidate);
-        if let Some(found) = indexed.iter().find(|p| **p == &as_path) {
-            return Resolved::File((*found).clone());
+impl ImportIndex {
+    /// Index the given paths.  Duplicate paths are collapsed, so a repeated
+    /// entry cannot fabricate an ambiguity.
+    pub(crate) fn build<'a, I>(paths: I) -> Self
+    where
+        I: IntoIterator<Item = &'a PathBuf>,
+    {
+        let mut by_suffix: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        let mut by_path: HashMap<String, PathBuf> = HashMap::new();
+
+        for path in paths {
+            let normalized = path.to_string_lossy().replace('\\', "/");
+            by_path.insert(normalized.clone(), path.clone());
+
+            // The full path, then each suffix beginning after a '/'.  Together
+            // these are exactly the matches the old `text == import ||
+            // text.ends_with("/" + import)` test accepted.
+            let mut push = |key: String| {
+                let bucket = by_suffix.entry(key).or_default();
+                if !bucket.contains(path) {
+                    bucket.push(path.clone());
+                }
+            };
+            push(normalized.clone());
+            for (offset, _) in normalized.match_indices('/') {
+                push(normalized[offset + 1..].to_string());
+            }
         }
+
+        Self { by_suffix, by_path }
     }
-    Resolved::External
+
+    /// Resolve an import target to an indexed file, by path only.
+    ///
+    /// Deliberately syntactic: C/C++ include paths and TypeScript relative
+    /// specifiers are written paths, so matching them against indexed paths is a
+    /// fact. Rust module paths are matched against the conventional file layout
+    /// and are reported as external when that layout does not apply.
+    pub(crate) fn resolve(&self, importer: &Path, import: &str, language: &str) -> Resolved {
+        let candidates: Vec<String> = match language {
+            "c" | "cpp" => {
+                // One lookup replaces the whole-corpus scan.  `#include
+                // "ange/ecs.hpp"` may live under any include root, which is why
+                // the key is a component-boundary suffix rather than a full path.
+                return match self.by_suffix.get(import) {
+                    None => Resolved::External,
+                    Some(files) if files.len() == 1 => Resolved::File(files[0].clone()),
+                    Some(_) => Resolved::Ambiguous,
+                };
+            }
+            "typescript" => {
+                if !import.starts_with('.') {
+                    // Bare specifier: a package, not a file in this project.
+                    return Resolved::External;
+                }
+                let base = importer.parent().unwrap_or(Path::new(""));
+                let joined = crate::util::path::lexical_join(base, import);
+                let stem = joined.to_string_lossy().replace('\\', "/");
+                ["ts", "tsx", "js", "jsx"]
+                    .iter()
+                    .map(|ext| format!("{stem}.{ext}"))
+                    .chain(
+                        ["ts", "tsx", "js", "jsx"]
+                            .iter()
+                            .map(|ext| format!("{stem}/index.{ext}")),
+                    )
+                    .collect()
+            }
+            "rust" => {
+                let Some(rest) = import.strip_prefix("crate::") else {
+                    // `std::`, an external crate, or a `self::`/`super::` form the
+                    // conventional layout cannot pin down.
+                    return Resolved::External;
+                };
+                let segments: Vec<&str> = rest.split("::").collect();
+                let mut candidates = Vec::new();
+                // `crate::a::b::Item` may live in a/b.rs, a/b/mod.rs, or a.rs.
+                for take in (1..=segments.len()).rev() {
+                    let joined = segments[..take].join("/");
+                    candidates.push(format!("src/{joined}.rs"));
+                    candidates.push(format!("src/{joined}/mod.rs"));
+                    candidates.push(format!("{joined}.rs"));
+                }
+                candidates
+            }
+            _ => return Resolved::External,
+        };
+
+        // Candidate order is significant and unchanged: the first candidate that
+        // exists wins.
+        for candidate in candidates {
+            if let Some(found) = self.by_path.get(&candidate) {
+                return Resolved::File(found.clone());
+            }
+        }
+        Resolved::External
+    }
 }
 
 /// Subsystem key for a path: its first `depth` components, or the file itself
@@ -276,7 +403,10 @@ pub fn build(index: &Index, opts: &MapOptions<'_>) -> MapReport {
         included.push((path, data, class));
     }
 
-    let indexed: BTreeSet<&PathBuf> = included.iter().map(|(p, _, _)| *p).collect();
+    // Built once for the whole map: the filtered file set is exactly what an
+    // import may resolve to, so an include pointing at an excluded file stays
+    // External, as before.
+    let imports = ImportIndex::build(included.iter().map(|(p, _, _)| *p));
 
     // 2. Aggregate per subsystem.
     struct Acc {
@@ -322,7 +452,7 @@ pub fn build(index: &Index, opts: &MapOptions<'_>) -> MapReport {
         }
 
         for import in &data.imports {
-            match resolve_import(path, import, &data.meta.language, &indexed) {
+            match imports.resolve(path, import, &data.meta.language) {
                 Resolved::File(target) => {
                     let target_key = subsystem_of(&target, opts.depth);
                     if target_key != key {
@@ -436,8 +566,14 @@ mod tests {
             classify(Path::new("vendor/thirdparty/blob.cpp")),
             PathClass::Vendor
         );
-        assert_eq!(classify(Path::new("node_modules/x/index.js")), PathClass::Vendor);
-        assert_eq!(classify(Path::new("generated/gen_api.cpp")), PathClass::Generated);
+        assert_eq!(
+            classify(Path::new("node_modules/x/index.js")),
+            PathClass::Vendor
+        );
+        assert_eq!(
+            classify(Path::new("generated/gen_api.cpp")),
+            PathClass::Generated
+        );
         assert_eq!(classify(Path::new("build/out.cpp")), PathClass::Generated);
         assert_eq!(classify(Path::new("src/api.gen.ts")), PathClass::Generated);
     }
@@ -475,28 +611,69 @@ mod tests {
     fn cpp_include_resolves_by_path_suffix() {
         let a = PathBuf::from("include/ange/ecs.hpp");
         let b = PathBuf::from("src/ecs.cpp");
-        let indexed: BTreeSet<&PathBuf> = [&a, &b].into_iter().collect();
+        let idx = ImportIndex::build([&a, &b]);
 
         assert_eq!(
-            resolve_import(Path::new("src/ecs.cpp"), "ange/ecs.hpp", "cpp", &indexed),
+            idx.resolve(Path::new("src/ecs.cpp"), "ange/ecs.hpp", "cpp"),
             Resolved::File(a.clone())
         );
         // Not in the project: a system header.
         assert_eq!(
-            resolve_import(Path::new("src/ecs.cpp"), "vector", "cpp", &indexed),
+            idx.resolve(Path::new("src/ecs.cpp"), "vector", "cpp"),
             Resolved::External
         );
+    }
+
+    #[test]
+    fn cpp_include_matches_only_on_component_boundaries() {
+        // The suffix lookup must not accept a partial final component: `cs.hpp`
+        // is a substring of `ecs.hpp` but not a path suffix of it.
+        let a = PathBuf::from("include/ange/ecs.hpp");
+        let idx = ImportIndex::build([&a]);
+
+        assert_eq!(
+            idx.resolve(Path::new("src/x.cpp"), "cs.hpp", "cpp"),
+            Resolved::External
+        );
+        assert_eq!(
+            idx.resolve(Path::new("src/x.cpp"), "ge/ecs.hpp", "cpp"),
+            Resolved::External
+        );
+        // Every genuine component-boundary suffix does resolve.
+        for import in ["ecs.hpp", "ange/ecs.hpp", "include/ange/ecs.hpp"] {
+            assert_eq!(
+                idx.resolve(Path::new("src/x.cpp"), import, "cpp"),
+                Resolved::File(a.clone()),
+                "{import}"
+            );
+        }
     }
 
     #[test]
     fn ambiguous_cpp_include_produces_no_edge() {
         let a = PathBuf::from("a/include/util.h");
         let b = PathBuf::from("b/include/util.h");
-        let indexed: BTreeSet<&PathBuf> = [&a, &b].into_iter().collect();
+        let idx = ImportIndex::build([&a, &b]);
         assert_eq!(
-            resolve_import(Path::new("src/x.cpp"), "include/util.h", "cpp", &indexed),
+            idx.resolve(Path::new("src/x.cpp"), "include/util.h", "cpp"),
             Resolved::Ambiguous,
             "two matches must not be resolved to an arbitrary one"
+        );
+        // A longer, unambiguous spelling still resolves.
+        assert_eq!(
+            idx.resolve(Path::new("src/x.cpp"), "a/include/util.h", "cpp"),
+            Resolved::File(a.clone())
+        );
+    }
+
+    #[test]
+    fn duplicate_paths_cannot_fabricate_ambiguity() {
+        let a = PathBuf::from("include/util.h");
+        let idx = ImportIndex::build([&a, &a]);
+        assert_eq!(
+            idx.resolve(Path::new("src/x.cpp"), "util.h", "cpp"),
+            Resolved::File(a.clone()),
+            "one file listed twice is still one file"
         );
     }
 
@@ -504,19 +681,19 @@ mod tests {
     fn typescript_relative_import_resolves_against_the_importer() {
         let a = PathBuf::from("src/app.ts");
         let b = PathBuf::from("src/lib/helper.ts");
-        let indexed: BTreeSet<&PathBuf> = [&a, &b].into_iter().collect();
+        let idx = ImportIndex::build([&a, &b]);
 
         assert_eq!(
-            resolve_import(Path::new("src/app.ts"), "./lib/helper", "typescript", &indexed),
+            idx.resolve(Path::new("src/app.ts"), "./lib/helper", "typescript"),
             Resolved::File(b.clone())
         );
         assert_eq!(
-            resolve_import(Path::new("src/lib/helper.ts"), "../app", "typescript", &indexed),
+            idx.resolve(Path::new("src/lib/helper.ts"), "../app", "typescript"),
             Resolved::File(a.clone())
         );
         // Bare specifiers are packages.
         assert_eq!(
-            resolve_import(Path::new("src/app.ts"), "react", "typescript", &indexed),
+            idx.resolve(Path::new("src/app.ts"), "react", "typescript"),
             Resolved::External
         );
     }
@@ -525,19 +702,23 @@ mod tests {
     fn rust_crate_paths_resolve_to_conventional_files() {
         let a = PathBuf::from("src/index.rs");
         let b = PathBuf::from("src/util/path.rs");
-        let indexed: BTreeSet<&PathBuf> = [&a, &b].into_iter().collect();
+        let idx = ImportIndex::build([&a, &b]);
 
         assert_eq!(
-            resolve_import(Path::new("src/main.rs"), "crate::index::Symbol", "rust", &indexed),
+            idx.resolve(Path::new("src/main.rs"), "crate::index::Symbol", "rust"),
             Resolved::File(a.clone())
         );
         assert_eq!(
-            resolve_import(Path::new("src/main.rs"), "crate::util::path", "rust", &indexed),
+            idx.resolve(Path::new("src/main.rs"), "crate::util::path", "rust"),
             Resolved::File(b.clone())
         );
         // std and external crates are not project files.
         assert_eq!(
-            resolve_import(Path::new("src/main.rs"), "std::collections::HashMap", "rust", &indexed),
+            idx.resolve(
+                Path::new("src/main.rs"),
+                "std::collections::HashMap",
+                "rust"
+            ),
             Resolved::External
         );
     }
@@ -545,10 +726,60 @@ mod tests {
     #[test]
     fn unmodelled_language_imports_are_external() {
         let a = PathBuf::from("main.py");
-        let indexed: BTreeSet<&PathBuf> = [&a].into_iter().collect();
+        let idx = ImportIndex::build([&a]);
         assert_eq!(
-            resolve_import(Path::new("main.py"), "os", "python", &indexed),
+            idx.resolve(Path::new("main.py"), "os", "python"),
             Resolved::External
+        );
+    }
+
+    /// Regression guard for the O(imports x files) scan this lookup replaced.
+    ///
+    /// The old implementation compared every import against every indexed path
+    /// and allocated two `String`s per pair.  At the scale below that is
+    /// 6,000 x 4,000 = 24M comparisons with ~48M allocations, which takes tens of
+    /// seconds in a debug build; the lookup does 4,000 inserts plus 6,000 hash
+    /// probes and finishes in milliseconds.  The bound is deliberately loose so
+    /// it cannot flake on a slow machine, while still being orders of magnitude
+    /// below a reintroduced full scan.
+    #[test]
+    fn include_resolution_does_not_scale_with_corpus_size() {
+        use std::time::Instant;
+
+        let paths: Vec<PathBuf> = (0..4_000)
+            .map(|i| PathBuf::from(format!("src/mod{}/unit{i}.h", i % 40)))
+            .collect();
+
+        let build_start = Instant::now();
+        let idx = ImportIndex::build(paths.iter());
+        let build_elapsed = build_start.elapsed();
+
+        let resolve_start = Instant::now();
+        let mut resolved = 0usize;
+        let mut external = 0usize;
+        for i in 0..6_000 {
+            // Half the imports hit a real file, half miss entirely.
+            let import = if i % 2 == 0 {
+                format!("unit{}.h", i % 4_000)
+            } else {
+                format!("absent/header{i}.h")
+            };
+            match idx.resolve(Path::new("src/caller.cpp"), &import, "cpp") {
+                Resolved::File(_) => resolved += 1,
+                Resolved::External => external += 1,
+                Resolved::Ambiguous => panic!("unique file names must not be ambiguous"),
+            }
+        }
+        let resolve_elapsed = resolve_start.elapsed();
+
+        // Correctness of the workload itself, so a no-op cannot pass the timing.
+        assert_eq!(resolved, 3_000, "half the imports must resolve");
+        assert_eq!(external, 3_000, "half the imports must miss");
+
+        let total = build_elapsed + resolve_elapsed;
+        assert!(
+            total.as_secs_f64() < 5.0,
+            "include resolution regressed to corpus-wide scanning: build={build_elapsed:?} resolve={resolve_elapsed:?}"
         );
     }
 }

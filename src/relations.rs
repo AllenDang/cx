@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::index::{Index, Symbol, SymbolRole};
-use crate::map::{Resolved, resolve_import};
+use crate::map::{ImportIndex, Resolved};
 
 /// What kind of fact an edge rests on (roadmap §5.4).
 ///
@@ -73,7 +73,10 @@ pub enum ResolutionLevel {
     /// Types were resolved.  cx never claims this — the variant exists so the
     /// ladder is complete and so nothing has to invent a label for a level cx
     /// does not reach.
-    #[allow(dead_code, reason = "contract vocabulary; cx performs no type resolution")]
+    #[allow(
+        dead_code,
+        reason = "contract vocabulary; cx performs no type resolution"
+    )]
     TypeResolved,
 }
 
@@ -145,7 +148,11 @@ fn candidates_for<'a>(index: &'a Index, name: &str) -> Vec<Candidate<'a>> {
             }
         }
     }
-    if definitions.is_empty() { declarations } else { definitions }
+    if definitions.is_empty() {
+        declarations
+    } else {
+        definitions
+    }
 }
 
 /// Distinct logical targets among candidates, by qualified label.
@@ -170,6 +177,7 @@ struct Resolution {
 /// cross-scope false edge §11 forbids.
 fn resolve_call(
     index: &Index,
+    imports: &ImportIndex,
     call_file: &Path,
     call_language: &str,
     caller_scope: &[String],
@@ -219,13 +227,12 @@ fn resolve_call(
     }
 
     // Import evidence: the calling file resolves an import to the file defining
-    // exactly one candidate.
-    let indexed: BTreeSet<&PathBuf> = index.entries.keys().collect();
+    // exactly one candidate.  The lookup is prebuilt by the caller, so this no
+    // longer rescans the corpus once per call site.
     if let Some(data) = index.entries.get(call_file) {
         let mut imported_files: BTreeSet<PathBuf> = BTreeSet::new();
         for import in &data.imports {
-            if let Resolved::File(target) =
-                resolve_import(call_file, import, &data.meta.language, &indexed)
+            if let Resolved::File(target) = imports.resolve(call_file, import, &data.meta.language)
             {
                 imported_files.insert(target);
             }
@@ -313,6 +320,10 @@ pub fn callers(index: &Index, name: &str, scope_glob: Option<&str>) -> RelationR
     let mut rows = Vec::new();
     let mut warnings = Vec::new();
 
+    // Built once per query over the whole index, which is exactly the resolution
+    // set the previous `index.entries.keys()` scan used.
+    let imports = ImportIndex::build(index.entries.keys());
+
     let mut files: Vec<(&PathBuf, &crate::index::FileData)> = index.entries.iter().collect();
     files.sort_by_key(|(path, _)| *path);
 
@@ -340,6 +351,7 @@ pub fn callers(index: &Index, name: &str, scope_glob: Option<&str>) -> RelationR
 
             let resolution = resolve_call(
                 index,
+                &imports,
                 path,
                 &data.meta.language,
                 &caller_scope,
@@ -358,7 +370,9 @@ pub fn callers(index: &Index, name: &str, scope_glob: Option<&str>) -> RelationR
             }
 
             rows.push(EdgeRow {
-                from: caller.map(label_of).unwrap_or_else(|| "(file scope)".to_string()),
+                from: caller
+                    .map(label_of)
+                    .unwrap_or_else(|| "(file scope)".to_string()),
                 to: resolution.to.clone().unwrap_or_default(),
                 evidence: EvidenceKind::Call.as_str().to_string(),
                 resolution: resolution.level.as_str().to_string(),
@@ -421,16 +435,23 @@ pub fn callees(index: &Index, name: &str, scope_glob: Option<&str>) -> RelationR
             labels.len(),
             labels.join(", ")
         ));
-        return RelationReport { rows: Vec::new(), warnings };
+        return RelationReport {
+            rows: Vec::new(),
+            warnings,
+        };
     }
 
     let mut rows = Vec::new();
     let mut all_candidates_cache: HashMap<String, Vec<Candidate<'_>>> = HashMap::new();
+    // Built once per query, not once per call site.
+    let imports = ImportIndex::build(index.entries.keys());
 
     for host in &hosts {
         let abs = index.root.join(host.path);
         let Ok(source) = fs::read(&abs) else { continue };
-        let Some(data) = index.entries.get(host.path) else { continue };
+        let Some(data) = index.entries.get(host.path) else {
+            continue;
+        };
         let Ok(sites) = crate::language::find_calls(&data.meta.language, &source, &abs) else {
             continue;
         };
@@ -449,6 +470,7 @@ pub fn callees(index: &Index, name: &str, scope_glob: Option<&str>) -> RelationR
 
             let resolution = resolve_call(
                 index,
+                &imports,
                 host.path,
                 &data.meta.language,
                 &host_scope,
@@ -469,7 +491,9 @@ pub fn callees(index: &Index, name: &str, scope_glob: Option<&str>) -> RelationR
     }
 
     rows.sort_by(|a, b| a.line.cmp(&b.line).then(a.to.cmp(&b.to)));
-    rows.dedup_by(|a, b| a.line == b.line && a.to == b.to && a.ambiguous_candidates == b.ambiguous_candidates);
+    rows.dedup_by(|a, b| {
+        a.line == b.line && a.to == b.to && a.ambiguous_candidates == b.ambiguous_candidates
+    });
 
     let unresolved = rows.iter().filter(|r| r.to.is_empty()).count();
     if unresolved > 0 {

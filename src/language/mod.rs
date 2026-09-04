@@ -77,7 +77,13 @@ static LANGUAGES: &[LanguageConfig] = &[
         sig_body_child: None,
         sig_delimiter: Some(b'{'),
         kind_overrides: &[],
-        ref_node_types: &["identifier", "type_identifier", "property_identifier", "shorthand_property_identifier", "shorthand_property_identifier_pattern"],
+        ref_node_types: &[
+            "identifier",
+            "type_identifier",
+            "property_identifier",
+            "shorthand_property_identifier",
+            "shorthand_property_identifier_pattern",
+        ],
     },
     LanguageConfig {
         name: "python",
@@ -109,9 +115,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         query: queries::C,
         sig_body_child: None,
         sig_delimiter: Some(b'{'),
-        kind_overrides: &[
-            ("definition.class", "", SymbolKind::Struct),
-        ],
+        kind_overrides: &[("definition.class", "", SymbolKind::Struct)],
         ref_node_types: &["identifier", "type_identifier", "field_identifier"],
     },
     LanguageConfig {
@@ -182,9 +186,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         query: queries::ZIG,
         sig_body_child: None,
         sig_delimiter: Some(b'{'),
-        kind_overrides: &[
-            ("definition.class", "Decl", SymbolKind::Struct),
-        ],
+        kind_overrides: &[("definition.class", "Decl", SymbolKind::Struct)],
         ref_node_types: &["IDENTIFIER"],
     },
     LanguageConfig {
@@ -258,7 +260,9 @@ pub enum LangError {
 impl std::fmt::Display for LangError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotInstalled(name) => write!(f, "{name} grammar not installed — run: cx lang add {name}"),
+            Self::NotInstalled(name) => {
+                write!(f, "{name} grammar not installed — run: cx lang add {name}")
+            }
             Self::ParseFailed => write!(f, "parse failed"),
         }
     }
@@ -282,7 +286,8 @@ pub fn supported_languages() -> Vec<&'static str> {
 
 /// Return the primary file extension for a language config name.
 pub fn primary_extension(lang: &str) -> &str {
-    LANGUAGES.iter()
+    LANGUAGES
+        .iter()
         .find(|c| c.name == lang)
         .and_then(|c| c.extensions.first().copied())
         .unwrap_or(lang)
@@ -290,7 +295,8 @@ pub fn primary_extension(lang: &str) -> &str {
 
 /// Return the download names for a language (for `cx lang add`).
 pub fn download_names_for(lang: &str) -> Vec<&'static str> {
-    LANGUAGES.iter()
+    LANGUAGES
+        .iter()
         .find(|c| c.name == lang)
         .map(|c| {
             if c.download_names.is_empty() {
@@ -313,9 +319,16 @@ fn resolve_grammar_name(config: &LanguageConfig, ext: &str) -> &'static str {
 }
 
 /// Look up config, create parser, and parse source into a tree.
-fn parse_source(lang: &str, source: &[u8], path: &Path) -> Result<(&'static LanguageConfig, tree_sitter::Tree, &'static str), LangError> {
+fn parse_source(
+    lang: &str,
+    source: &[u8],
+    path: &Path,
+) -> Result<(&'static LanguageConfig, tree_sitter::Tree, &'static str), LangError> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let config = LANGUAGES.iter().find(|c| c.name == lang).ok_or_else(|| LangError::NotInstalled(lang.to_string()))?;
+    let config = LANGUAGES
+        .iter()
+        .find(|c| c.name == lang)
+        .ok_or_else(|| LangError::NotInstalled(lang.to_string()))?;
     let grammar_name = resolve_grammar_name(config, ext);
 
     let ts_lang = tree_sitter_language_pack::get_language(grammar_name)
@@ -326,7 +339,9 @@ fn parse_source(lang: &str, source: &[u8], path: &Path) -> Result<(&'static Lang
     }
 
     let tree = PARSER.with_borrow_mut(|parser| {
-        parser.set_language(&ts_lang).map_err(|_| LangError::ParseFailed)?;
+        parser
+            .set_language(&ts_lang)
+            .map_err(|_| LangError::ParseFailed)?;
         parser.parse(source, None).ok_or(LangError::ParseFailed)
     })?;
     Ok((config, tree, grammar_name))
@@ -345,7 +360,12 @@ pub fn find_calls(lang: &str, source: &[u8], path: &Path) -> Result<Vec<CallSite
 }
 
 /// Parse source and find all identifier nodes whose text matches `name`.
-pub fn find_references(lang: &str, source: &[u8], path: &Path, name: &str) -> Result<Vec<extract::Reference>, LangError> {
+pub fn find_references(
+    lang: &str,
+    source: &[u8],
+    path: &Path,
+    name: &str,
+) -> Result<Vec<extract::Reference>, LangError> {
     let (config, tree, _) = parse_source(lang, source, path)?;
 
     let mut refs = Vec::new();
@@ -479,7 +499,9 @@ pub fn parse_and_extract(lang: &str, source: &[u8], path: &Path) -> Result<FileP
 
     // Fast path: read lock for cache hits (concurrent reads don't block each other)
     {
-        let cache = QUERY_CACHE.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cache = QUERY_CACHE
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(query) = cache.get(grammar_name) {
             return Ok(FileParse {
                 symbols: extract::extract_symbols(config, query, &tree, source),
@@ -489,7 +511,9 @@ pub fn parse_and_extract(lang: &str, source: &[u8], path: &Path) -> Result<FileP
     }
 
     // Slow path: write lock for cache miss
-    let mut cache = QUERY_CACHE.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cache = QUERY_CACHE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let query = cache.entry(grammar_name).or_insert_with(|| {
         Query::new(&tree.language(), config.query).expect("query compilation failed")
     });

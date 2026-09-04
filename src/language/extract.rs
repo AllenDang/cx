@@ -140,7 +140,12 @@ fn split_callee(node: Node, source: &[u8]) -> Option<(String, Option<String>)> {
     let whole = node.utf8_text(source).ok()?;
     let qualifier = whole
         .strip_suffix(&name)
-        .map(|prefix| prefix.trim_end_matches([':', '.', '>', '-']).trim().to_string())
+        .map(|prefix| {
+            prefix
+                .trim_end_matches([':', '.', '>', '-'])
+                .trim()
+                .to_string()
+        })
         .filter(|q| !q.is_empty());
 
     Some((name, qualifier))
@@ -151,7 +156,11 @@ fn split_callee(node: Node, source: &[u8]) -> Option<(String, Option<String>)> {
 /// Returns AST facts only: name, written qualifier, and location.  Deciding
 /// which definition a call refers to happens later, with its resolution level
 /// recorded (roadmap §5.4).
-pub(super) fn find_call_sites(lang: &str, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<CallSite> {
+pub(super) fn find_call_sites(
+    lang: &str,
+    tree: &tree_sitter::Tree,
+    source: &[u8],
+) -> Vec<CallSite> {
     let Some(model) = call_model(lang) else {
         return Vec::new();
     };
@@ -198,7 +207,9 @@ fn has_rust_test_attribute(node: Node, source: &[u8]) -> bool {
     let mut sibling = node.prev_named_sibling();
     while let Some(sib) = sibling {
         if sib.kind() == "attribute_item" {
-            if let Ok(text) = sib.utf8_text(source) && is_test_attribute(text) {
+            if let Ok(text) = sib.utf8_text(source)
+                && is_test_attribute(text)
+            {
                 return true;
             }
         } else {
@@ -214,7 +225,9 @@ fn has_rust_test_attribute(node: Node, source: &[u8]) -> bool {
             let mut sib = p.prev_named_sibling();
             while let Some(s) = sib {
                 if s.kind() == "attribute_item" {
-                    if let Ok(text) = s.utf8_text(source) && text.contains("cfg(test)") {
+                    if let Ok(text) = s.utf8_text(source)
+                        && text.contains("cfg(test)")
+                    {
                         return true;
                     }
                 } else {
@@ -234,11 +247,17 @@ fn has_rust_test_attribute(node: Node, source: &[u8]) -> bool {
 fn is_test_attribute(text: &str) -> bool {
     let trimmed = text.trim_start_matches("#[").trim_end_matches(']');
     // Exact match: #[test]
-    if trimmed == "test" { return true; }
+    if trimmed == "test" {
+        return true;
+    }
     // Path-qualified: #[tokio::test], #[tokio::test(...)]
-    if trimmed.ends_with("::test") || trimmed.contains("::test(") { return true; }
+    if trimmed.ends_with("::test") || trimmed.contains("::test(") {
+        return true;
+    }
     // cfg(test)
-    if trimmed.contains("cfg(test)") { return true; }
+    if trimmed.contains("cfg(test)") {
+        return true;
+    }
     false
 }
 
@@ -321,12 +340,12 @@ fn scope_model(lang: &str) -> Option<ScopeModel> {
 
 /// Name of the lexical scope `node` introduces, if any.
 fn scope_name_of(model: &ScopeModel, node: Node, source: &[u8]) -> Option<String> {
-    let (_, field) = model
-        .nodes
-        .iter()
-        .find(|(kind, _)| *kind == node.kind())?;
+    let (_, field) = model.nodes.iter().find(|(kind, _)| *kind == node.kind())?;
     let named = node.child_by_field_name(field)?;
-    named.utf8_text(source).ok().map(std::string::ToString::to_string)
+    named
+        .utf8_text(source)
+        .ok()
+        .map(std::string::ToString::to_string)
 }
 
 /// Lexical scope path for a symbol, outermost first.
@@ -407,7 +426,8 @@ pub(super) fn extract_symbols(
             }
         }
 
-        let (Some(name_n), Some(def_n), Some((role, kind_key))) = (name_node, def_node, def_capture)
+        let (Some(name_n), Some(def_n), Some((role, kind_key))) =
+            (name_node, def_node, def_capture)
         else {
             continue;
         };
@@ -416,7 +436,7 @@ pub(super) fn extract_symbols(
             Ok(s) => {
                 // Strip surrounding quotes from string-literal names (e.g. Zig test names)
                 if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-                    s[1..s.len()-1].to_string()
+                    s[1..s.len() - 1].to_string()
                 } else {
                     s.to_string()
                 }
@@ -593,12 +613,13 @@ fn build_signature(config: &LanguageConfig, node: Node, source: &[u8]) -> String
 
     // Strategy 2: scan for delimiter byte
     if let Some(delim) = config.sig_delimiter
-        && let Some(pos) = text.iter().position(|&b| b == delim) {
-            let sig = String::from_utf8_lossy(&text[..pos]).trim().to_string();
-            if !sig.is_empty() {
-                return sig;
-            }
+        && let Some(pos) = text.iter().position(|&b| b == delim)
+    {
+        let sig = String::from_utf8_lossy(&text[..pos]).trim().to_string();
+        if !sig.is_empty() {
+            return sig;
         }
+    }
 
     // Strategy 3: for arrow functions, truncate at =>
     if let Some(pos) = text.windows(2).position(|w| w == b"=>") {
@@ -638,16 +659,30 @@ fn deduplicate(symbols: Vec<Symbol>) -> Vec<Symbol> {
 
     // Remove symbols whose range is strictly contained within another symbol
     // of the same name (e.g. class_specifier inside template_declaration).
-    let ranges: Vec<_> = deduped.iter().map(|s| (s.name.as_str(), s.byte_range)).collect();
+    let ranges: Vec<_> = deduped
+        .iter()
+        .map(|s| (s.name.as_str(), s.byte_range))
+        .collect();
     let mut keep = vec![true; deduped.len()];
     for (i, (name_i, (start_i, end_i))) in ranges.iter().enumerate() {
         for (j, (name_j, (start_j, end_j))) in ranges.iter().enumerate() {
-            if i != j && name_i == name_j && deduped[i].kind == deduped[j].kind && start_j <= start_i && end_i <= end_j && (start_j, end_j) != (start_i, end_i) {
+            if i != j
+                && name_i == name_j
+                && deduped[i].kind == deduped[j].kind
+                && start_j <= start_i
+                && end_i <= end_j
+                && (start_j, end_j) != (start_i, end_i)
+            {
                 keep[i] = false;
                 break;
             }
         }
     }
 
-    deduped.into_iter().zip(keep).filter(|(_, k)| *k).map(|(s, _)| s).collect()
+    deduped
+        .into_iter()
+        .zip(keep)
+        .filter(|(_, k)| *k)
+        .map(|(s, _)| s)
+        .collect()
 }

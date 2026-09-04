@@ -35,7 +35,10 @@ fn qualified_pairs(run: &support::Run) -> Vec<(String, String)> {
 #[test]
 fn cpp_namespaces_classes_and_out_of_line_definitions_are_qualified() {
     let p = fixture_project(CORPUS);
-    let out = run_cx(p.path(), &["--json", "symbols", "--file", "src/ecs.cpp", "--all"]);
+    let out = run_cx(
+        p.path(),
+        &["--json", "symbols", "--file", "src/ecs.cpp", "--all"],
+    );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
 
     let pairs = qualified_pairs(&out);
@@ -44,9 +47,15 @@ fn cpp_namespaces_classes_and_out_of_line_definitions_are_qualified() {
     // `void EcsWorld::run()` inside `namespace ange` combines the enclosing
     // namespace with the qualifier written at the definition site.
     assert!(qualified.contains(&"ange::EcsWorld::run"), "{qualified:?}");
-    assert!(qualified.contains(&"ange::EcsWorld::entity_count"), "{qualified:?}");
+    assert!(
+        qualified.contains(&"ange::EcsWorld::entity_count"),
+        "{qualified:?}"
+    );
     assert!(qualified.contains(&"ange::validate_param"), "{qualified:?}");
-    assert!(qualified.contains(&"ange"), "namespace itself: {qualified:?}");
+    assert!(
+        qualified.contains(&"ange"),
+        "namespace itself: {qualified:?}"
+    );
 }
 
 #[test]
@@ -54,27 +63,51 @@ fn cpp_in_class_declarations_are_qualified_by_their_class() {
     let p = fixture_project(CORPUS);
     let out = run_cx(
         p.path(),
-        &["--json", "symbols", "--file", "include/ange/ecs.hpp", "--all"],
+        &[
+            "--json",
+            "symbols",
+            "--file",
+            "include/ange/ecs.hpp",
+            "--all",
+        ],
     );
     let qualified: Vec<String> = qualified_pairs(&out).into_iter().map(|(_, q)| q).collect();
-    assert!(qualified.contains(&"ange::EcsWorld::run".to_string()), "{qualified:?}");
+    assert!(
+        qualified.contains(&"ange::EcsWorld::run".to_string()),
+        "{qualified:?}"
+    );
     assert!(
         qualified.contains(&"ange::EcsWorld::entity_count".to_string()),
         "{qualified:?}"
     );
     // Free function in the namespace, not in the class.
-    assert!(qualified.contains(&"ange::validate_param".to_string()), "{qualified:?}");
+    assert!(
+        qualified.contains(&"ange::validate_param".to_string()),
+        "{qualified:?}"
+    );
 }
 
 #[test]
 fn rust_modules_qualify_their_items() {
     let p = fixture_project(CORPUS);
-    let out = run_cx(p.path(), &["--json", "symbols", "--file", "src/lib.rs", "--all"]);
+    let out = run_cx(
+        p.path(),
+        &["--json", "symbols", "--file", "src/lib.rs", "--all"],
+    );
     let qualified: Vec<String> = qualified_pairs(&out).into_iter().map(|(_, q)| q).collect();
 
-    assert!(qualified.contains(&"alpha::run".to_string()), "{qualified:?}");
-    assert!(qualified.contains(&"beta::run".to_string()), "{qualified:?}");
-    assert!(qualified.contains(&"run_both".to_string()), "top level: {qualified:?}");
+    assert!(
+        qualified.contains(&"alpha::run".to_string()),
+        "{qualified:?}"
+    );
+    assert!(
+        qualified.contains(&"beta::run".to_string()),
+        "{qualified:?}"
+    );
+    assert!(
+        qualified.contains(&"run_both".to_string()),
+        "top level: {qualified:?}"
+    );
     assert!(
         qualified.contains(&"tests::run_both_sums_scopes".to_string()),
         "test module qualifies its items: {qualified:?}"
@@ -84,12 +117,21 @@ fn rust_modules_qualify_their_items() {
 #[test]
 fn typescript_classes_and_interfaces_qualify_their_members() {
     let p = fixture_project(CORPUS);
-    let out = run_cx(p.path(), &["--json", "symbols", "--file", "src/app.ts", "--all"]);
+    let out = run_cx(
+        p.path(),
+        &["--json", "symbols", "--file", "src/app.ts", "--all"],
+    );
     let qualified: Vec<String> = qualified_pairs(&out).into_iter().map(|(_, q)| q).collect();
 
     // TypeScript joins with `.`, not `::`.
-    assert!(qualified.contains(&"Tickable.run".to_string()), "{qualified:?}");
-    assert!(qualified.contains(&"AlphaRunner.run".to_string()), "{qualified:?}");
+    assert!(
+        qualified.contains(&"Tickable.run".to_string()),
+        "{qualified:?}"
+    );
+    assert!(
+        qualified.contains(&"AlphaRunner.run".to_string()),
+        "{qualified:?}"
+    );
     assert!(
         qualified.contains(&"run".to_string()),
         "exported top-level function: {qualified:?}"
@@ -101,7 +143,10 @@ fn typescript_classes_and_interfaces_qualify_their_members() {
 #[test]
 fn unmodelled_languages_report_unresolved_scope() {
     let p = fixture_project(CORPUS);
-    let out = run_cx(p.path(), &["--json", "symbols", "--file", "docs/design.md", "--all"]);
+    let out = run_cx(
+        p.path(),
+        &["--json", "symbols", "--file", "docs/design.md", "--all"],
+    );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     let rows = out.results();
     assert!(!rows.is_empty());
@@ -131,7 +176,10 @@ fn same_name_symbols_in_different_scopes_are_distinguished() {
         pairs,
         vec![
             ("generated/gen_api.cpp".to_string(), "gen::run".to_string()),
-            ("include/ange/ecs.hpp".to_string(), "ange::EcsWorld::run".to_string()),
+            (
+                "include/ange/ecs.hpp".to_string(),
+                "ange::EcsWorld::run".to_string()
+            ),
             ("src/app.ts".to_string(), "AlphaRunner.run".to_string()),
             ("src/app.ts".to_string(), "Tickable.run".to_string()),
             ("src/app.ts".to_string(), "run".to_string()),
@@ -139,9 +187,18 @@ fn same_name_symbols_in_different_scopes_are_distinguished() {
             ("src/lib.rs".to_string(), "alpha::run".to_string()),
             ("src/lib.rs".to_string(), "beta::run".to_string()),
             ("src/scope_a.cpp".to_string(), "alpha::run".to_string()),
-            ("src/scope_b.cpp".to_string(), "beta::Runner::run".to_string()),
-            ("src/scope_b.cpp".to_string(), "beta::Runner::run".to_string()),
-            ("vendor/thirdparty/blob.cpp".to_string(), "thirdparty::run".to_string()),
+            (
+                "src/scope_b.cpp".to_string(),
+                "beta::Runner::run".to_string()
+            ),
+            (
+                "src/scope_b.cpp".to_string(),
+                "beta::Runner::run".to_string()
+            ),
+            (
+                "vendor/thirdparty/blob.cpp".to_string(),
+                "thirdparty::run".to_string()
+            ),
         ],
         "every location resolves to a qualified identity"
     );
@@ -161,7 +218,9 @@ fn scope_filter_selects_one_scope_of_a_shared_name() {
 
     let alpha = run_cx(
         p.path(),
-        &["--json", "symbols", "--name", "run", "--scope", "alpha::*", "--all"],
+        &[
+            "--json", "symbols", "--name", "run", "--scope", "alpha::*", "--all",
+        ],
     );
     assert_eq!(alpha.code, 0, "stderr: {}", alpha.stderr);
     let pairs = qualified_pairs(&alpha);
@@ -177,12 +236,21 @@ fn scope_filter_selects_one_scope_of_a_shared_name() {
     let nested = run_cx(
         p.path(),
         &[
-            "--json", "symbols", "--name", "run", "--scope", "ange::EcsWorld::*", "--all",
+            "--json",
+            "symbols",
+            "--name",
+            "run",
+            "--scope",
+            "ange::EcsWorld::*",
+            "--all",
         ],
     );
     let pairs = qualified_pairs(&nested);
     assert_eq!(pairs.len(), 2, "declaration + definition: {pairs:?}");
-    assert!(pairs.iter().all(|(_, q)| q == "ange::EcsWorld::run"), "{pairs:?}");
+    assert!(
+        pairs.iter().all(|(_, q)| q == "ange::EcsWorld::run"),
+        "{pairs:?}"
+    );
 }
 
 #[test]
@@ -191,14 +259,21 @@ fn scope_filter_narrows_definition_to_one_symbol() {
     let out = run_cx(
         p.path(),
         &[
-            "--json", "definition", "--name", "run", "--scope", "beta::Runner::*", "--all",
+            "--json",
+            "definition",
+            "--name",
+            "run",
+            "--scope",
+            "beta::Runner::*",
+            "--all",
         ],
     );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     let rows = out.results();
     assert_eq!(rows.len(), 2, "declaration + definition\n{}", out.stdout);
     assert!(
-        rows.iter().all(|r| r["qualified"].as_str().unwrap() == "beta::Runner::run"),
+        rows.iter()
+            .all(|r| r["qualified"].as_str().unwrap() == "beta::Runner::run"),
         "{}",
         out.stdout
     );
@@ -220,7 +295,15 @@ fn scope_filter_never_matches_unresolved_scopes() {
     let p = fixture_project(CORPUS);
     let out = run_cx(
         p.path(),
-        &["--json", "symbols", "--file", "docs/design.md", "--scope", "*", "--all"],
+        &[
+            "--json",
+            "symbols",
+            "--file",
+            "docs/design.md",
+            "--scope",
+            "*",
+            "--all",
+        ],
     );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     assert_eq!(
@@ -242,13 +325,17 @@ fn definition_output_carries_the_qualified_name() {
     let rows = json.results();
     assert_eq!(rows.len(), 2);
     assert!(
-        rows.iter().all(|r| r["qualified"].as_str().unwrap() == "ange::validate_param"),
+        rows.iter()
+            .all(|r| r["qualified"].as_str().unwrap() == "ange::validate_param"),
         "{}",
         json.stdout
     );
 
     // Plain-text output shows it too, and only when it is resolved.
-    let text = run_cx(p.path(), &["definition", "--name", "validate_param", "--all"]);
+    let text = run_cx(
+        p.path(),
+        &["definition", "--name", "validate_param", "--all"],
+    );
     assert!(
         text.stdout.contains("qualified: ange::validate_param"),
         "{}",
@@ -271,20 +358,34 @@ fn from_and_scope_agree_on_the_same_symbol() {
     let by_file = run_cx(
         p.path(),
         &[
-            "--json", "definition", "--name", "run", "--from", "src/scope_a.cpp", "--all",
+            "--json",
+            "definition",
+            "--name",
+            "run",
+            "--from",
+            "src/scope_a.cpp",
+            "--all",
         ],
     );
     let by_scope = run_cx(
         p.path(),
         &[
-            "--json", "definition", "--name", "run", "--scope", "alpha::run", "--from",
-            "src/scope_a.cpp", "--all",
+            "--json",
+            "definition",
+            "--name",
+            "run",
+            "--scope",
+            "alpha::run",
+            "--from",
+            "src/scope_a.cpp",
+            "--all",
         ],
     );
     assert_eq!(by_file.json_len(), 1, "{}", by_file.stdout);
     assert_eq!(by_scope.json_len(), 1, "{}", by_scope.stdout);
     assert_eq!(
-        by_file.results()[0]["body"], by_scope.results()[0]["body"],
+        by_file.results()[0]["body"],
+        by_scope.results()[0]["body"],
         "both narrowings select the same definition"
     );
 }

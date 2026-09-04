@@ -52,11 +52,17 @@ impl<T> Paginated<T> {
 
 fn paginate<T>(items: Vec<T>, pg: &Pagination) -> Paginated<T> {
     let total = items.len();
-    let visible = items.into_iter()
+    let visible = items
+        .into_iter()
         .skip(pg.offset)
         .take(pg.limit.unwrap_or(usize::MAX))
         .collect();
-    Paginated { items: visible, total, offset: pg.offset, limit: pg.limit }
+    Paginated {
+        items: visible,
+        total,
+        offset: pg.offset,
+        limit: pg.limit,
+    }
 }
 
 /// A query that could not be answered, as opposed to one that found nothing
@@ -149,7 +155,13 @@ const NARROW_SUBDIR: &str = "cx overview <subdir>";
 const AMBIGUITY_LIST_LIMIT: usize = 5;
 
 /// Emit a compact pagination hint on stderr.
-fn emit_pagination_hint(total: usize, offset: usize, shown: usize, subject: &str, narrow_hint: &str) {
+fn emit_pagination_hint(
+    total: usize,
+    offset: usize,
+    shown: usize,
+    subject: &str,
+    narrow_hint: &str,
+) {
     let next_offset = offset + shown;
     eprintln!(
         "cx: {shown}/{total} {subject} | {narrow_hint} to narrow | --offset {next_offset} for more | --all"
@@ -264,19 +276,22 @@ pub fn symbols(
     for (path, data) in files_to_search {
         for sym in &data.symbols {
             if let Some(pattern) = name_glob
-                && !glob_match(pattern, &sym.name) {
-                    continue;
-                }
+                && !glob_match(pattern, &sym.name)
+            {
+                continue;
+            }
 
             if let Some(kind) = kind_filter
-                && sym.kind != kind {
-                    continue;
-                }
+                && sym.kind != kind
+            {
+                continue;
+            }
 
             if let Some(role) = role_filter
-                && sym.role != role {
-                    continue;
-                }
+                && sym.role != role
+            {
+                continue;
+            }
 
             // Scope filtering only matches symbols whose scope cx actually
             // resolved; an unresolved symbol is never assumed to be in scope.
@@ -324,7 +339,11 @@ pub fn symbols(
         let out: Vec<SymbolRowWithRangeOut> = rows
             .into_iter()
             .map(|r| SymbolRowWithRangeOut {
-                file: if single_file { None } else { Some(display_path(r.file)) },
+                file: if single_file {
+                    None
+                } else {
+                    Some(display_path(r.file))
+                },
                 name: r.symbol.name.clone(),
                 qualified: qualified_or_empty(r.symbol),
                 kind: r.symbol.kind.as_str().to_string(),
@@ -335,12 +354,24 @@ pub fn symbols(
             })
             .collect();
         let paged = paginate(out, pg);
-        emit(json, query_kind, subject, &index.freshness, &paged, "symbols", NARROW_SYMBOLS)
+        emit(
+            json,
+            query_kind,
+            subject,
+            &index.freshness,
+            &paged,
+            "symbols",
+            NARROW_SYMBOLS,
+        )
     } else {
         let out: Vec<SymbolRowOut> = rows
             .into_iter()
             .map(|r| SymbolRowOut {
-                file: if single_file { None } else { Some(display_path(r.file)) },
+                file: if single_file {
+                    None
+                } else {
+                    Some(display_path(r.file))
+                },
                 name: r.symbol.name.clone(),
                 qualified: qualified_or_empty(r.symbol),
                 kind: r.symbol.kind.as_str().to_string(),
@@ -349,7 +380,15 @@ pub fn symbols(
             })
             .collect();
         let paged = paginate(out, pg);
-        emit(json, query_kind, subject, &index.freshness, &paged, "symbols", NARROW_SYMBOLS)
+        emit(
+            json,
+            query_kind,
+            subject,
+            &index.freshness,
+            &paged,
+            "symbols",
+            NARROW_SYMBOLS,
+        )
     }
 }
 
@@ -361,11 +400,7 @@ struct KindCountRow {
 }
 
 /// List distinct symbol kinds with their counts, optionally scoped to a file.
-pub fn kind_counts(
-    index: &Index,
-    file: Option<&Path>,
-    json: bool,
-) -> i32 {
+pub fn kind_counts(index: &Index, file: Option<&Path>, json: bool) -> i32 {
     let rel_path = file.map(|f| make_relative(f, &index.root));
     let subject = rel_path.as_deref().map(display_path);
 
@@ -377,7 +412,8 @@ pub fn kind_counts(
         None => index.entries.iter().collect(),
     };
 
-    let mut counts: std::collections::BTreeMap<&'static str, usize> = std::collections::BTreeMap::new();
+    let mut counts: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
     for (_path, data) in files_to_search {
         for sym in &data.symbols {
             *counts.entry(sym.kind.as_str()).or_insert(0) += 1;
@@ -386,14 +422,30 @@ pub fn kind_counts(
 
     let mut rows: Vec<KindCountRow> = counts
         .into_iter()
-        .map(|(kind, count)| KindCountRow { kind: kind.to_string(), count })
+        .map(|(kind, count)| KindCountRow {
+            kind: kind.to_string(),
+            count,
+        })
         .collect();
     rows.sort_by_key(|r| std::cmp::Reverse(r.count));
 
     // Kind counts are already an aggregate, so they are never paginated.
     let total = rows.len();
-    let paged = Paginated { items: rows, total, offset: 0, limit: None };
-    emit(json, "kinds", subject, &index.freshness, &paged, "kinds", NARROW_FILE)
+    let paged = Paginated {
+        items: rows,
+        total,
+        offset: 0,
+        limit: None,
+    };
+    emit(
+        json,
+        "kinds",
+        subject,
+        &index.freshness,
+        &paged,
+        "kinds",
+        NARROW_FILE,
+    )
 }
 
 /// Execute the definition query: find symbol by exact name, return its body.
@@ -418,13 +470,15 @@ pub fn definition(
         for sym in &data.symbols {
             if sym.name == name {
                 if let Some(kind) = kind_filter
-                    && sym.kind != kind {
-                        continue;
-                    }
+                    && sym.kind != kind
+                {
+                    continue;
+                }
                 if let Some(role) = role_filter
-                    && sym.role != role {
-                        continue;
-                    }
+                    && sym.role != role
+                {
+                    continue;
+                }
                 if let Some(pattern) = scope_glob {
                     let Some(qualified) = sym.qualified_name.as_deref() else {
                         continue;
@@ -443,7 +497,11 @@ pub fn definition(
         let from_matches: Vec<_> = matches
             .iter()
             .filter(|(path, _, _)| {
-                if is_dir { path.starts_with(from_path) } else { *path == from_path }
+                if is_dir {
+                    path.starts_with(from_path)
+                } else {
+                    *path == from_path
+                }
             })
             .copied()
             .collect();
@@ -479,7 +537,8 @@ pub fn definition(
     // priority (types first), then by file path.  An agent asking for a
     // definition wants the body, not the prototype (roadmap §5.1).
     matches.sort_by(|a, b| {
-        role_priority(a.1.role).cmp(&role_priority(b.1.role))
+        role_priority(a.1.role)
+            .cmp(&role_priority(b.1.role))
             .then(symbol_priority(a.1.kind).cmp(&symbol_priority(b.1.kind)))
             .then(a.0.cmp(b.0))
     });
@@ -487,19 +546,17 @@ pub fn definition(
     // Paginate matches BEFORE reading bodies to avoid pointless disk I/O
     let paged_matches = paginate(matches, pg);
 
-    let results: Vec<DefinitionResult> = paged_matches.items
+    let results: Vec<DefinitionResult> = paged_matches
+        .items
         .iter()
         .map(|(path, sym, _)| {
-            let (body, start_line) = read_body(&index.root, path, sym.byte_range)
-                .unwrap_or((String::new(), 0));
+            let (body, start_line) =
+                read_body(&index.root, path, sym.byte_range).unwrap_or((String::new(), 0));
             let line_count = body.lines().count();
             let truncated = line_count > max_lines;
 
             let display_body = if truncated {
-                body.lines()
-                    .take(max_lines)
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                body.lines().take(max_lines).collect::<Vec<_>>().join("\n")
             } else {
                 body
             };
@@ -591,7 +648,13 @@ pub fn definition(
 
     if paged_matches.was_truncated() {
         let hint_noun = format!("definitions for \"{name}\"");
-        emit_pagination_hint(paged_matches.total, paged_matches.offset, results.len(), &hint_noun, NARROW_FROM);
+        emit_pagination_hint(
+            paged_matches.total,
+            paged_matches.offset,
+            results.len(),
+            &hint_noun,
+            NARROW_FROM,
+        );
     }
 
     0
@@ -709,9 +772,7 @@ pub fn references(
                     &index.freshness,
                     QueryFailure {
                         code: ErrorCode::GrammarNotInstalled,
-                        message: format!(
-                            "{lang} grammar not installed — run: cx lang add {lang}"
-                        ),
+                        message: format!("{lang} grammar not installed — run: cx lang add {lang}"),
                     },
                 );
             }
@@ -740,7 +801,9 @@ pub fn references(
                 evidence: evidence.as_str().to_string(),
                 // Syntax is the honest ceiling here: the node kind is known, the
                 // target is not resolved.  Use `cx callers` for edge resolution.
-                resolution: crate::relations::ResolutionLevel::Syntax.as_str().to_string(),
+                resolution: crate::relations::ResolutionLevel::Syntax
+                    .as_str()
+                    .to_string(),
                 context,
             });
         }
@@ -754,8 +817,10 @@ pub fn references(
     let hint_noun = format!("references for \"{name}\"");
 
     if !context {
-        let mut by_file: std::collections::BTreeMap<String, (usize, std::collections::BTreeSet<String>, Vec<usize>)> =
-            std::collections::BTreeMap::new();
+        let mut by_file: std::collections::BTreeMap<
+            String,
+            (usize, std::collections::BTreeSet<String>, Vec<usize>),
+        > = std::collections::BTreeMap::new();
         for row in rows {
             let entry = by_file
                 .entry(row.file)
@@ -780,10 +845,26 @@ pub fn references(
             })
             .collect();
         let paged = paginate(summary_rows, pg);
-        emit(json, "references", subject, &index.freshness, &paged, &hint_noun, NARROW_FILE)
+        emit(
+            json,
+            "references",
+            subject,
+            &index.freshness,
+            &paged,
+            &hint_noun,
+            NARROW_FILE,
+        )
     } else {
         let paged = paginate(rows, pg);
-        emit(json, "references", subject, &index.freshness, &paged, &hint_noun, NARROW_FILE)
+        emit(
+            json,
+            "references",
+            subject,
+            &index.freshness,
+            &paged,
+            &hint_noun,
+            NARROW_FILE,
+        )
     }
 }
 
@@ -933,10 +1014,16 @@ pub fn refresh_report(index: &Index, requested: &[PathBuf], json: bool) -> i32 {
     if requested.is_empty() {
         // Whole-project verification: only changes are interesting.
         for path in &index.updated {
-            rows.push(RefreshRow { file: display_path(path), status: "updated" });
+            rows.push(RefreshRow {
+                file: display_path(path),
+                status: "updated",
+            });
         }
         for path in &index.removed {
-            rows.push(RefreshRow { file: display_path(path), status: "removed" });
+            rows.push(RefreshRow {
+                file: display_path(path),
+                status: "removed",
+            });
         }
     } else {
         for path in requested {
@@ -950,15 +1037,31 @@ pub fn refresh_report(index: &Index, requested: &[PathBuf], json: bool) -> i32 {
             } else {
                 "not_indexed"
             };
-            rows.push(RefreshRow { file: display_path(&rel), status });
+            rows.push(RefreshRow {
+                file: display_path(&rel),
+                status,
+            });
         }
     }
     rows.sort_by(|a, b| a.file.cmp(&b.file));
 
     if json {
         let total = rows.len();
-        let paged = Paginated { items: rows, total, offset: 0, limit: None };
-        return emit(true, "refresh", None, &index.freshness, &paged, "paths", NARROW_FILE);
+        let paged = Paginated {
+            items: rows,
+            total,
+            offset: 0,
+            limit: None,
+        };
+        return emit(
+            true,
+            "refresh",
+            None,
+            &index.freshness,
+            &paged,
+            "paths",
+            NARROW_FILE,
+        );
     }
 
     let f = &index.freshness;
@@ -1010,10 +1113,17 @@ const fn role_priority(role: SymbolRole) -> u8 {
 /// Priority for symbol kinds in directory overview: lower = shown first.
 const fn symbol_priority(kind: SymbolKind) -> u8 {
     match kind {
-        SymbolKind::Struct | SymbolKind::Enum | SymbolKind::Trait
-        | SymbolKind::Interface | SymbolKind::Class => 0,
-        SymbolKind::Fn | SymbolKind::Const | SymbolKind::Type
-        | SymbolKind::Module | SymbolKind::Event | SymbolKind::Heading => 1,
+        SymbolKind::Struct
+        | SymbolKind::Enum
+        | SymbolKind::Trait
+        | SymbolKind::Interface
+        | SymbolKind::Class => 0,
+        SymbolKind::Fn
+        | SymbolKind::Const
+        | SymbolKind::Type
+        | SymbolKind::Module
+        | SymbolKind::Event
+        | SymbolKind::Heading => 1,
         SymbolKind::Field => 2,
     }
 }
@@ -1040,16 +1150,32 @@ fn is_test_file(path: &Path) -> bool {
         None => return false,
     };
     // Go: *_test.go
-    if name.ends_with("_test.go") { return true; }
+    if name.ends_with("_test.go") {
+        return true;
+    }
     // JS/TS: *.test.* or *.spec.*
-    for ext in &[".test.ts", ".test.tsx", ".test.js", ".test.jsx",
-                 ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx"] {
-        if name.ends_with(ext) { return true; }
+    for ext in &[
+        ".test.ts",
+        ".test.tsx",
+        ".test.js",
+        ".test.jsx",
+        ".spec.ts",
+        ".spec.tsx",
+        ".spec.js",
+        ".spec.jsx",
+    ] {
+        if name.ends_with(ext) {
+            return true;
+        }
     }
     // Python: test_*.py
-    if name.starts_with("test_") && name.ends_with(".py") { return true; }
+    if name.starts_with("test_") && name.ends_with(".py") {
+        return true;
+    }
     // Ruby: *_spec.rb
-    if name.ends_with("_spec.rb") { return true; }
+    if name.ends_with("_spec.rb") {
+        return true;
+    }
     false
 }
 
@@ -1084,7 +1210,11 @@ pub fn dir_overview(
     pg: &Pagination,
 ) -> i32 {
     let rel_dir = make_relative(dir, &index.root);
-    let rel_dir = if rel_dir == Path::new(".") { PathBuf::new() } else { rel_dir };
+    let rel_dir = if rel_dir == Path::new(".") {
+        PathBuf::new()
+    } else {
+        rel_dir
+    };
 
     let all_entries: Vec<(&PathBuf, &FileData)> = index
         .entries
@@ -1108,7 +1238,8 @@ pub fn dir_overview(
 
     // Partition into direct files and subdirectory aggregates
     let mut direct_files: Vec<(&PathBuf, &FileData)> = Vec::new();
-    let mut subdirs: std::collections::BTreeMap<String, (usize, usize)> = std::collections::BTreeMap::new();
+    let mut subdirs: std::collections::BTreeMap<String, (usize, usize)> =
+        std::collections::BTreeMap::new();
 
     for (path, data) in &all_entries {
         let child = match child_component(path, &rel_dir) {
@@ -1142,11 +1273,16 @@ pub fn dir_overview(
     };
 
     fn prepare_symbols(data: &FileData, no_tests: bool) -> Vec<&Symbol> {
-        let mut syms: Vec<&Symbol> = data.symbols.iter()
+        let mut syms: Vec<&Symbol> = data
+            .symbols
+            .iter()
             .filter(|s| !no_tests || !s.is_test)
             .collect();
-        syms.sort_by(|a, b| symbol_priority(a.kind).cmp(&symbol_priority(b.kind))
-            .then(a.name.cmp(&b.name)));
+        syms.sort_by(|a, b| {
+            symbol_priority(a.kind)
+                .cmp(&symbol_priority(b.kind))
+                .then(a.name.cmp(&b.name))
+        });
         syms
     }
 
@@ -1166,14 +1302,17 @@ pub fn dir_overview(
         }
         for (path, data) in &direct_files {
             let syms = prepare_symbols(data, no_tests);
-            if syms.is_empty() { continue; }
+            if syms.is_empty() {
+                continue;
+            }
             let total = syms.len();
             for sym in syms.iter().take(DIR_OVERVIEW_MAX_SYMBOLS) {
                 rows.push(DirOverviewFullRow {
                     file: display_path(path),
                     name: sym.name.clone(),
                     kind: sym.kind.as_str().to_string(),
-                    range: line_range(index, &mut line_cache, path, sym.byte_range).unwrap_or_default(),
+                    range: line_range(index, &mut line_cache, path, sym.byte_range)
+                        .unwrap_or_default(),
                     signature: sym.signature.clone(),
                 });
             }
@@ -1188,7 +1327,15 @@ pub fn dir_overview(
             }
         }
         let paged = paginate(rows, pg);
-        emit(json, "overview", subject, &index.freshness, &paged, "entries", NARROW_SUBDIR)
+        emit(
+            json,
+            "overview",
+            subject,
+            &index.freshness,
+            &paged,
+            "entries",
+            NARROW_SUBDIR,
+        )
     } else {
         let mut rows: Vec<DirOverviewRow> = Vec::new();
         for (dir_name, (file_count, sym_count)) in &subdirs {
@@ -1199,11 +1346,14 @@ pub fn dir_overview(
         }
         for (path, data) in &direct_files {
             let syms = prepare_symbols(data, no_tests);
-            if syms.is_empty() { continue; }
+            if syms.is_empty() {
+                continue;
+            }
             let total = syms.len();
             // Deduplicate names (e.g. overloaded type params)
             let mut seen = std::collections::HashSet::new();
-            let names: Vec<&str> = syms.iter()
+            let names: Vec<&str> = syms
+                .iter()
                 .take(DIR_OVERVIEW_MAX_SYMBOLS)
                 .map(|s| s.name.as_str())
                 .filter(|n| seen.insert(*n))
@@ -1220,7 +1370,15 @@ pub fn dir_overview(
             });
         }
         let paged = paginate(rows, pg);
-        emit(json, "overview", subject, &index.freshness, &paged, "entries", NARROW_SUBDIR)
+        emit(
+            json,
+            "overview",
+            subject,
+            &index.freshness,
+            &paged,
+            "entries",
+            NARROW_SUBDIR,
+        )
     }
 }
 
@@ -1247,9 +1405,12 @@ fn line_range(
         std::collections::hash_map::Entry::Vacant(entry) => {
             let source = fs::read(index.root.join(file)).ok()?;
             let mut starts = vec![0];
-            starts.extend(source.iter().enumerate().filter_map(|(i, &byte)| {
-                (byte == b'\n').then_some(i + 1)
-            }));
+            starts.extend(
+                source
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, &byte)| (byte == b'\n').then_some(i + 1)),
+            );
             entry.insert(starts)
         }
     };
@@ -1330,7 +1491,10 @@ mod tests {
     fn display_path_normalizes_backslashes() {
         assert_eq!(display_path(Path::new("src/main.rs")), "src/main.rs");
         assert_eq!(display_path(Path::new("src\\main.rs")), "src/main.rs");
-        assert_eq!(display_path(Path::new("src\\sub\\file.rs")), "src/sub/file.rs");
+        assert_eq!(
+            display_path(Path::new("src\\sub\\file.rs")),
+            "src/sub/file.rs"
+        );
     }
 
     // --- is_test_file tests ---

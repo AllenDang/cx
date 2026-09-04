@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::language::{LangError, detect_language, download_names_for, parse_and_extract, primary_extension};
+use crate::language::{
+    LangError, detect_language, download_names_for, parse_and_extract, primary_extension,
+};
 
 pub const INDEX_VERSION: u32 = 12;
 
@@ -371,7 +373,8 @@ fn load_entries(db: &impl ReadableDatabase) -> Option<(HashMap<PathBuf, FileData
         } else {
             None
         }
-    })().unwrap_or(false);
+    })()
+    .unwrap_or(false);
 
     if !version_ok {
         return None;
@@ -386,7 +389,11 @@ fn load_entries(db: &impl ReadableDatabase) -> Option<(HashMap<PathBuf, FileData
             if let Some(meta) = decode_file_entry(val.value()) {
                 entries.insert(
                     path,
-                    FileData { meta, symbols: Vec::new(), imports: Vec::new() },
+                    FileData {
+                        meta,
+                        symbols: Vec::new(),
+                        imports: Vec::new(),
+                    },
                 );
             }
         }
@@ -457,7 +464,11 @@ impl DiskScan {
 /// `metadata` compares size + high-resolution mtime and reads no file bodies.
 /// `verified` hashes contents, so it catches an edit that preserved both size
 /// and mtime.  `paths` checks only the paths the caller named, by content hash.
-fn scan_disk(root: &Path, entries: &HashMap<PathBuf, FileData>, req: &FreshnessRequest) -> DiskScan {
+fn scan_disk(
+    root: &Path,
+    entries: &HashMap<PathBuf, FileData>,
+    req: &FreshnessRequest,
+) -> DiskScan {
     if req.mode == FreshnessMode::Paths {
         return scan_named_paths(root, entries, &req.paths);
     }
@@ -499,16 +510,19 @@ fn scan_disk(root: &Path, entries: &HashMap<PathBuf, FileData>, req: &FreshnessR
                 let changed = match req.mode {
                     FreshnessMode::Verified => {
                         // Content is the authority; mtime is not consulted.
-                        fs::read(path).is_ok_and(|bytes| {
-                            content_hash(&bytes) != data.meta.content_hash
-                        })
+                        fs::read(path)
+                            .is_ok_and(|bytes| content_hash(&bytes) != data.meta.content_hash)
                     }
                     FreshnessMode::Metadata | FreshnessMode::Paths => {
                         data.meta.mtime() != mtime || data.meta.size != size
                     }
                 };
                 if changed {
-                    scan.stale.push(DiskFile { rel_path, mtime, lang });
+                    scan.stale.push(DiskFile {
+                        rel_path,
+                        mtime,
+                        lang,
+                    });
                 }
             }
             None => {
@@ -517,7 +531,11 @@ fn scan_disk(root: &Path, entries: &HashMap<PathBuf, FileData>, req: &FreshnessR
                     .all(|name| installed_grammars.iter().any(|installed| installed == name));
                 if indexed_langs.contains(lang) || grammar_installed {
                     scan.files_checked += 1;
-                    scan.stale.push(DiskFile { rel_path, mtime, lang });
+                    scan.stale.push(DiskFile {
+                        rel_path,
+                        mtime,
+                        lang,
+                    });
                 } else {
                     scan.skipped_missing_grammar += 1;
                 }
@@ -588,7 +606,11 @@ fn scan_named_paths(
             fs::read(&abs).is_ok_and(|bytes| content_hash(&bytes) == data.meta.content_hash)
         });
         if !unchanged {
-            scan.stale.push(DiskFile { rel_path, mtime, lang });
+            scan.stale.push(DiskFile {
+                rel_path,
+                mtime,
+                lang,
+            });
         }
     }
 
@@ -674,7 +696,10 @@ impl Index {
                 root: root.to_path_buf(),
                 db: Some(db),
                 entries,
-                freshness: Freshness { generation, ..Freshness::empty(req.mode) },
+                freshness: Freshness {
+                    generation,
+                    ..Freshness::empty(req.mode)
+                },
                 updated: Vec::new(),
                 removed: Vec::new(),
             };
@@ -706,7 +731,9 @@ impl Index {
                 let path = entry.path();
                 let lang = detect_language(path)?;
                 let rel_path = path.strip_prefix(&self.root).ok()?.to_path_buf();
-                let mtime = entry.metadata().ok()
+                let mtime = entry
+                    .metadata()
+                    .ok()
                     .and_then(|m| m.modified().ok())
                     .unwrap_or(SystemTime::UNIX_EPOCH);
                 Some((path.to_path_buf(), rel_path, lang, mtime))
@@ -823,7 +850,9 @@ impl Index {
                 eprintln!("cx: indexed {}/{}...", i + 1, total);
             }
             let abs_path = self.root.join(&file.rel_path);
-            let Ok(source) = fs::read(&abs_path) else { continue };
+            let Ok(source) = fs::read(&abs_path) else {
+                continue;
+            };
             let parse = match parse_and_extract(file.lang, &source, &abs_path) {
                 Ok(parse) => parse,
                 Err(LangError::NotInstalled(name)) => {
@@ -971,7 +1000,9 @@ impl Index {
                 let entry_bytes = encode_file_entry(&data.meta);
                 let _ = files_table.insert(key.as_ref(), entry_bytes.as_slice());
                 match bincode::serialize(&data.symbols) {
-                    Ok(sym_bytes) => { let _ = syms_table.insert(key.as_ref(), sym_bytes.as_slice()); }
+                    Ok(sym_bytes) => {
+                        let _ = syms_table.insert(key.as_ref(), sym_bytes.as_slice());
+                    }
                     Err(e) => eprintln!("cx: failed to serialize symbols for {key}: {e}"),
                 }
                 if let Ok(import_bytes) = bincode::serialize(&data.imports) {
@@ -987,7 +1018,6 @@ impl Index {
         // Only claim the new generation once it is durably committed.
         self.freshness.generation = next_generation;
     }
-
 }
 
 /// Walk the project tree, respecting .gitignore and skipping the index/db files.
@@ -1223,8 +1253,22 @@ mod tests {
 
         assert!(idx.entries.contains_key(&PathBuf::from("src/main.rs")));
         assert!(idx.entries.contains_key(&PathBuf::from("src/lib.rs")));
-        assert_eq!(idx.entries.get(&PathBuf::from("src/main.rs")).unwrap().symbols.len(), 1);
-        assert_eq!(idx.entries.get(&PathBuf::from("src/lib.rs")).unwrap().symbols.len(), 1);
+        assert_eq!(
+            idx.entries
+                .get(&PathBuf::from("src/main.rs"))
+                .unwrap()
+                .symbols
+                .len(),
+            1
+        );
+        assert_eq!(
+            idx.entries
+                .get(&PathBuf::from("src/lib.rs"))
+                .unwrap()
+                .symbols
+                .len(),
+            1
+        );
 
         // DB file should exist in cache dir
         assert!(cache_path_for(dir.path()).exists());
@@ -1252,7 +1296,9 @@ mod tests {
             let path = PathBuf::from(format!("src/module_{i}.rs"));
             let symbols = &idx.entries.get(&path).unwrap().symbols;
             assert!(
-                symbols.iter().any(|symbol| symbol.name == format!("function_{i}")),
+                symbols
+                    .iter()
+                    .any(|symbol| symbol.name == format!("function_{i}")),
                 "missing function_{i} in {path:?}"
             );
         }
@@ -1260,20 +1306,30 @@ mod tests {
 
     #[test]
     fn test_load_or_build_reloads_from_existing_db() {
-        let (dir, idx) = build_temp_index(&[
-            ("src/main.rs", "fn main() {}\nfn helper() {}\n"),
-        ]);
+        let (dir, idx) = build_temp_index(&[("src/main.rs", "fn main() {}\nfn helper() {}\n")]);
 
         let file_count = idx.entries.len();
-        let sym_count = idx.entries.get(&PathBuf::from("src/main.rs")).unwrap().symbols.len();
-        assert!(sym_count >= 2, "should have at least 2 symbols: {sym_count}");
+        let sym_count = idx
+            .entries
+            .get(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .symbols
+            .len();
+        assert!(
+            sym_count >= 2,
+            "should have at least 2 symbols: {sym_count}"
+        );
 
         // Drop and reload — should get same data from redb
         drop(idx);
         let idx2 = Index::load_or_build(dir.path(), &metadata_req());
         assert_eq!(idx2.entries.len(), file_count);
         assert_eq!(
-            idx2.entries.get(&PathBuf::from("src/main.rs")).unwrap().symbols.len(),
+            idx2.entries
+                .get(&PathBuf::from("src/main.rs"))
+                .unwrap()
+                .symbols
+                .len(),
             sym_count,
         );
     }
@@ -1321,13 +1377,24 @@ mod tests {
         let b_path = dir.path().join("src/b.rs");
         fs::write(&b_path, "fn b() {}\n").unwrap();
         let future = SystemTime::now() + Duration::from_secs(2);
-        fs::File::options().write(true).open(&b_path).unwrap()
-            .set_times(fs::FileTimes::new().set_modified(future)).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&b_path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(future))
+            .unwrap();
 
         let idx2 = Index::load_or_build(dir.path(), &metadata_req());
         assert_eq!(idx2.entries.len(), 2);
         assert!(idx2.entries.contains_key(&PathBuf::from("src/b.rs")));
-        assert_eq!(idx2.entries.get(&PathBuf::from("src/b.rs")).unwrap().symbols.len(), 1);
+        assert_eq!(
+            idx2.entries
+                .get(&PathBuf::from("src/b.rs"))
+                .unwrap()
+                .symbols
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -1339,7 +1406,14 @@ mod tests {
         fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").unwrap();
 
         let idx = Index::load_or_build(dir.path(), &metadata_req());
-        assert_eq!(idx.entries.get(&PathBuf::from("src/a.rs")).unwrap().symbols.len(), 1);
+        assert_eq!(
+            idx.entries
+                .get(&PathBuf::from("src/a.rs"))
+                .unwrap()
+                .symbols
+                .len(),
+            1
+        );
         drop(idx);
 
         // Modify the file — add a second function.
@@ -1347,12 +1421,20 @@ mod tests {
         let a_path = dir.path().join("src/a.rs");
         fs::write(&a_path, "fn a() {}\nfn b() {}\n").unwrap();
         let future = SystemTime::now() + Duration::from_secs(2);
-        fs::File::options().write(true).open(&a_path).unwrap()
-            .set_times(fs::FileTimes::new().set_modified(future)).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&a_path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(future))
+            .unwrap();
 
         let idx2 = Index::load_or_build(dir.path(), &metadata_req());
         assert_eq!(
-            idx2.entries.get(&PathBuf::from("src/a.rs")).unwrap().symbols.len(),
+            idx2.entries
+                .get(&PathBuf::from("src/a.rs"))
+                .unwrap()
+                .symbols
+                .len(),
             2,
             "should detect modified file and re-parse symbols"
         );
@@ -1470,19 +1552,42 @@ mod tests {
 
     #[test]
     fn test_symbols_persisted_to_redb() {
-        let (dir, idx) = build_temp_index(&[
-            ("src/main.rs", "pub fn foo(x: i32) -> bool { true }\nstruct Bar;\n"),
-        ]);
+        let (dir, idx) = build_temp_index(&[(
+            "src/main.rs",
+            "pub fn foo(x: i32) -> bool { true }\nstruct Bar;\n",
+        )]);
 
-        let syms = &idx.entries.get(&PathBuf::from("src/main.rs")).unwrap().symbols;
-        assert!(syms.iter().any(|s| s.name == "foo" && s.kind == SymbolKind::Fn));
-        assert!(syms.iter().any(|s| s.name == "Bar" && s.kind == SymbolKind::Struct));
+        let syms = &idx
+            .entries
+            .get(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .symbols;
+        assert!(
+            syms.iter()
+                .any(|s| s.name == "foo" && s.kind == SymbolKind::Fn)
+        );
+        assert!(
+            syms.iter()
+                .any(|s| s.name == "Bar" && s.kind == SymbolKind::Struct)
+        );
         drop(idx);
 
         // Reload and verify symbols survive the roundtrip through redb + bincode
         let idx2 = Index::load_or_build(dir.path(), &metadata_req());
-        let syms2 = &idx2.entries.get(&PathBuf::from("src/main.rs")).unwrap().symbols;
-        assert!(syms2.iter().any(|s| s.name == "foo" && s.kind == SymbolKind::Fn));
-        assert!(syms2.iter().any(|s| s.name == "Bar" && s.kind == SymbolKind::Struct));
+        let syms2 = &idx2
+            .entries
+            .get(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .symbols;
+        assert!(
+            syms2
+                .iter()
+                .any(|s| s.name == "foo" && s.kind == SymbolKind::Fn)
+        );
+        assert!(
+            syms2
+                .iter()
+                .any(|s| s.name == "Bar" && s.kind == SymbolKind::Struct)
+        );
     }
 }
