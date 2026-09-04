@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-pi install git:github.com/AllenDang/cx@v0.7.3
+pi install git:github.com/AllenDang/cx@v0.7.4
 ```
 
 The package supports macOS, Linux, and Windows on arm64 and x86_64. Installation selects the asset matching the current OS and architecture, verifies the archive and every manifest file, then installs it under a platform-specific `vendor/pi-cx/<platform>-<arch>` directory. Installation runs native code verification and requires network access. Review package source before installation.

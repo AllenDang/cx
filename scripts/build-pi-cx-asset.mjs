@@ -47,7 +47,7 @@ try {
   const bundleData = await download(bundle.url, `parser bundle ${config.bundleKey}`);
   if (bundleData.length !== bundle.size || digestBuffer(bundleData) !== bundle.sha256) throw new Error(`parser bundle checksum/size mismatch for ${config.bundleKey}`);
   const bundlePath = join(work, "parsers.tar.zst"); await writeFile(bundlePath, bundleData, { mode: 0o600 });
-  await exec("tar", ["-xf", bundlePath, "-C", parsers], work);
+  await exec("tar", ["-xf", "parsers.tar.zst", "-C", "parsers"], work);
   await copyFile(binary, join(stage, "bin", config.binaryName));
   if (config.platform !== "win32") await chmod(join(stage, "bin", config.binaryName), 0o755);
   for (const name of grammarNames) {
@@ -66,8 +66,9 @@ try {
   }
   await exec(process.execPath, [join(root, "scripts", "make-pi-cx-manifest.mjs"), stage, pkg.version, target, languagePackVersion], root);
   await mkdir(out, { recursive: true });
-  const archive = join(out, `pi-cx-${target}.tar.gz`);
-  await exec("tar", ["-czf", archive, "-C", stage, "manifest.json", "bin", "grammars"], work);
+  const archive = join(out, `pi-cx-${target}.tar.gz`), temporaryArchive = join(work, "pi-cx-asset.tar.gz");
+  await exec("tar", ["-czf", "pi-cx-asset.tar.gz", "-C", "stage", "manifest.json", "bin", "grammars"], work);
+  await copyFile(temporaryArchive, archive);
   await writeFile(`${archive}.sha256`, `${await digestFile(archive)}  ${basename(archive)}\n`);
   console.log(JSON.stringify({ archive, target, nativeVerified: native, files: 8 }));
 } finally { await rm(work, { recursive: true, force: true }); }

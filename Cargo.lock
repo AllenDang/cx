@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "cx-cli"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "bincode",
  "clap",
