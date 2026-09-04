@@ -445,7 +445,7 @@ git -C "$ANGE_WT" status --short
 #### Cold index
 
 | 指标 | PASS 上限 |
-|---|---:|
+| --- | ---: |
 | wall | 5.0 s |
 | peak RSS | 160 MiB |
 | index DB | 32 MiB |
@@ -453,7 +453,7 @@ git -C "$ANGE_WT" status --short
 #### Warm 基础查询
 
 | 查询 | median | p95 | peak RSS |
-|---|---:|---:|---:|
+| --- | ---: | ---: | ---: |
 | root overview | 250 ms | 400 ms | 96 MiB |
 | file overview | 250 ms | 400 ms | 96 MiB |
 | definition | 250 ms | 400 ms | 96 MiB |
@@ -465,7 +465,7 @@ git -C "$ANGE_WT" status --short
 #### Incremental
 
 | 指标 | PASS 上限 |
-|---|---:|
+| --- | ---: |
 | `cx refresh <one path>` | 500 ms |
 | metadata 自动发现一个普通编辑 | 750 ms |
 | verified 全 C/C++ corpus | 2.0 s |
@@ -477,7 +477,7 @@ git -C "$ANGE_WT" status --short
 真实 ANGE 查询的默认输出必须保持有界：
 
 | 查询 | 默认 stdout 上限 |
-|---|---:|
+| --- | ---: |
 | root overview | 4 KiB |
 | EcsWorld symbol search | 8 KiB |
 | references 默认页 | 16 KiB |
