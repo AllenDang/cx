@@ -32,6 +32,11 @@ pub(super) fn extract_headings(source: &[u8]) -> Vec<Symbol> {
                 name,
                 kind: SymbolKind::Heading,
                 role: SymbolRole::Heading,
+                // Markdown nesting is document structure, not a lexical code
+                // scope; Phase 5 models Rust, C/C++ and TypeScript only, so this
+                // is reported as unresolved rather than invented.
+                scope_path: Vec::new(),
+                qualified_name: None,
                 signature,
                 byte_range: (heading.start, heading.section_end),
                 is_test: false,

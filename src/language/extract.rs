@@ -91,6 +91,120 @@ fn split_capture(capture_name: &str) -> Option<(SymbolRole, String)> {
     Some((role, format!("definition.{suffix}")))
 }
 
+// --- Lexical scope model (roadmap §5.3) ---
+
+/// How a language nests named scopes.
+///
+/// Deliberately per-language rather than a shared guess: Phase 5 models Rust,
+/// C/C++ and TypeScript, which cover three different scope shapes (modules +
+/// impl blocks, namespaces + out-of-line member definitions, and
+/// classes/interfaces/namespaces).  A language absent from `scope_model` has its
+/// scopes reported as unresolved instead of assumed flat.
+struct ScopeModel {
+    /// `(node_kind, name_field)` pairs that introduce a named lexical scope.
+    nodes: &'static [(&'static str, &'static str)],
+    /// Separator used to join the scope path into a qualified name.
+    separator: &'static str,
+    /// Node kinds whose `scope` field carries an explicitly written qualifier,
+    /// e.g. the `EcsWorld::` in `void EcsWorld::run() {}`.
+    qualifier_nodes: &'static [&'static str],
+}
+
+fn scope_model(lang: &str) -> Option<ScopeModel> {
+    match lang {
+        "rust" => Some(ScopeModel {
+            // `impl Foo` names its scope with the `type` field, not `name`.
+            nodes: &[
+                ("mod_item", "name"),
+                ("impl_item", "type"),
+                ("trait_item", "name"),
+            ],
+            separator: "::",
+            qualifier_nodes: &["scoped_identifier"],
+        }),
+        "cpp" | "c" => Some(ScopeModel {
+            nodes: &[
+                ("namespace_definition", "name"),
+                ("class_specifier", "name"),
+                ("struct_specifier", "name"),
+                ("union_specifier", "name"),
+                ("enum_specifier", "name"),
+            ],
+            separator: "::",
+            qualifier_nodes: &["qualified_identifier"],
+        }),
+        "typescript" => Some(ScopeModel {
+            nodes: &[
+                ("class_declaration", "name"),
+                ("abstract_class_declaration", "name"),
+                ("interface_declaration", "name"),
+                ("module", "name"),
+                ("internal_module", "name"),
+                ("enum_declaration", "name"),
+            ],
+            separator: ".",
+            qualifier_nodes: &[],
+        }),
+        _ => None,
+    }
+}
+
+/// Name of the lexical scope `node` introduces, if any.
+fn scope_name_of(model: &ScopeModel, node: Node, source: &[u8]) -> Option<String> {
+    let (_, field) = model
+        .nodes
+        .iter()
+        .find(|(kind, _)| *kind == node.kind())?;
+    let named = node.child_by_field_name(field)?;
+    named.utf8_text(source).ok().map(std::string::ToString::to_string)
+}
+
+/// Lexical scope path for a symbol, outermost first.
+///
+/// Two sources are combined, both syntactic facts:
+/// 1. enclosing scope nodes walked up the AST (`namespace ange { class W { … } }`)
+/// 2. qualifiers written at the definition site (`void W::run() {}`)
+///
+/// No import or type resolution happens here — that is a later phase.
+fn compute_scope_path(
+    model: &ScopeModel,
+    def_node: Node,
+    name_node: Node,
+    source: &[u8],
+) -> Vec<String> {
+    let mut enclosing: Vec<String> = Vec::new();
+    let mut cursor = def_node.parent();
+    while let Some(node) = cursor {
+        if let Some(name) = scope_name_of(model, node, source) {
+            enclosing.push(name);
+        }
+        cursor = node.parent();
+    }
+    enclosing.reverse();
+
+    // Qualifiers written between the definition node and the name node.
+    let mut written: Vec<String> = Vec::new();
+    if !model.qualifier_nodes.is_empty() {
+        let mut cursor = name_node.parent();
+        while let Some(node) = cursor {
+            if node.id() == def_node.id() {
+                break;
+            }
+            if model.qualifier_nodes.contains(&node.kind())
+                && let Some(scope) = node.child_by_field_name("scope")
+                && let Ok(text) = scope.utf8_text(source)
+            {
+                written.push(text.to_string());
+            }
+            cursor = node.parent();
+        }
+        written.reverse();
+    }
+
+    enclosing.extend(written);
+    enclosing
+}
+
 // --- Generic extractor ---
 
 pub(super) fn extract_symbols(
@@ -102,6 +216,9 @@ pub(super) fn extract_symbols(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), source);
     let capture_names = query.capture_names();
+    // Looked up once per file: `None` means this language's lexical scopes are
+    // not modelled yet, which is reported as unresolved rather than flat.
+    let model = scope_model(config.name);
 
     let mut symbols = Vec::new();
 
@@ -157,10 +274,27 @@ pub(super) fn extract_symbols(
         }
         let is_test = detect_test_symbol(config.name, def_n, source);
 
+        let (scope_path, qualified_name) = match model.as_ref() {
+            Some(model) => {
+                let path = compute_scope_path(model, def_n, name_n, source);
+                let qualified = if path.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{}{}{}", path.join(model.separator), model.separator, name)
+                };
+                (path, Some(qualified))
+            }
+            // Unmodelled language: record no scope and no qualified name, so a
+            // consumer can tell "top-level" from "unknown" (roadmap §5.3).
+            None => (Vec::new(), None),
+        };
+
         symbols.push(Symbol {
             name,
             kind,
             role,
+            scope_path,
+            qualified_name,
             signature,
             byte_range,
             is_test,

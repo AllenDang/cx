@@ -62,8 +62,10 @@ dispatch, string-keyed lookups, non-symbol regions).
 cx overview DIR --full                               `--full` also includes kind/range/signature for direct files
 cx symbols [--kind K] [--name GLOB] [--file PATH]    search symbols project-wide
 cx symbols --role declaration                        signature-only sites (C/C++ prototypes, trait/interface members)
+cx symbols --scope 'alpha::*'                        filter by qualified name (glob)
 cx symbols --kinds [--file PATH]                     list distinct kinds with counts
 cx definition --name NAME [--from PATH] [--kind K]   get a definition (optionally filtered to specific kind, e.g. function body)
+cx definition --name NAME --scope 'Class::*'         pick one scope when a name exists in several
 cx references --name NAME [--file PATH] [--context]  find usages, `--context` will show the line where the use appears
 cx refresh PATH...                                   re-index the named files now, by content hash
 ```
@@ -73,6 +75,8 @@ cx refresh PATH...                                   re-index the named files no
 - Kinds: fn, struct, enum, trait, type, const, class, interface, module, event, field, heading
 - Roles: definition (has a body/members), declaration (signature only), heading (Markdown section), unknown (grammar
   cannot tell the forms apart). Roles come from grammar captures, not from guessing at braces.
+- `qualified` is the lexically qualified name (`ange::EcsWorld::run`, `Tickable.run`). Modelled for Rust, C/C++ and
+  TypeScript; **empty means unresolved, not top-level**. `--scope` never matches an unresolved symbol.
 - `.gitignore` is honored. Untracked-but-not-ignored files are still indexed.
 
 ## Key patterns
@@ -88,6 +92,9 @@ cx refresh PATH...                                   re-index the named files no
 - In C/C++ (and Rust traits, TypeScript interfaces) a name can have both a declaration and a definition. `cx definition`
   lists the implementation first; add `--role definition` to drop prototypes, or `--role declaration` to see only the
   header signature.
+- When one short name exists in several scopes, read `warnings`: it reports how many **distinct** symbols share the name
+  and lists their qualified names. Narrow with `--scope` (or `--from`) instead of assuming the first row is the one you
+  want. A declaration plus its definition is one symbol, so it produces no such warning.
 - `cx references --name X` groups hits by file; add `--context` only when exact source lines are needed.
 - When re-entering an unfamiliar area or picking up a topic after a gap, use `cx overview` / `cx definition` to
   re-orient — don't re-read full files

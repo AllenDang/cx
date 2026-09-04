@@ -68,9 +68,9 @@ fn overview_main_rs() {
     let out = cx().args(["overview", "src/main.rs"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("{name,kind,role,range,signature}:"), "should have TOON header: {stdout}");
-    assert!(stdout.contains("main,fn,definition,"));
-    assert!(stdout.contains("resolve_root,fn,definition,"));
+    assert!(stdout.contains("{name,qualified,kind,role,range,signature}:"), "should have TOON header: {stdout}");
+    assert!(stdout.contains("main,main,fn,definition,"));
+    assert!(stdout.contains("resolve_root,resolve_root,fn,definition,"));
 }
 
 #[test]
@@ -87,9 +87,9 @@ fn overview_includes_line_ranges() {
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("{name,kind,role,range,signature}:"), "{stdout}");
-    assert!(stdout.contains("alpha,fn,definition,\"1-3\","), "{stdout}");
-    assert!(stdout.contains("beta,fn,definition,\"5\","), "{stdout}");
+    assert!(stdout.contains("{name,qualified,kind,role,range,signature}:"), "{stdout}");
+    assert!(stdout.contains("alpha,alpha,fn,definition,\"1-3\","), "{stdout}");
+    assert!(stdout.contains("beta,beta,fn,definition,\"5\","), "{stdout}");
 }
 
 #[test]
@@ -265,9 +265,9 @@ fn markdown_overview_shows_headings() {
     let out = cx_in(dir.path()).args(["overview", "README.md"]).output().unwrap();
     assert!(out.status.success(), "overview README.md should succeed: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("{name,kind,role,range,signature}:"), "{stdout}");
-    assert!(stdout.contains("Hello,heading,heading"), "{stdout}");
-    assert!(stdout.contains("Usage,heading,heading"), "{stdout}");
+    assert!(stdout.contains("{name,qualified,kind,role,range,signature}:"), "{stdout}");
+    assert!(stdout.contains("Hello,\"\",heading,heading"), "{stdout}");
+    assert!(stdout.contains("Usage,\"\",heading,heading"), "{stdout}");
 }
 
 #[test]
@@ -303,8 +303,9 @@ fn objc_overview_and_symbols() {
         "objc overview should succeed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(stdout.contains("Greeter,class"), "{stdout}");
-    assert!(stdout.contains("\"sayHello:\",fn"), "{stdout}");
+    // objc scopes are not modelled yet, so the qualified column is empty.
+    assert!(stdout.contains("Greeter,\"\",class"), "{stdout}");
+    assert!(stdout.contains("\"sayHello:\",\"\",fn"), "{stdout}");
 
     let out = cx_in(dir.path())
         .args(["symbols", "--kind", "fn", "--file", "src/Greeter.m"])
@@ -316,7 +317,7 @@ fn objc_overview_and_symbols() {
         "objc symbols should succeed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(stdout.contains("\"sayHello:\",fn"), "{stdout}");
+    assert!(stdout.contains("\"sayHello:\",\"\",fn"), "{stdout}");
 }
 
 #[test]
@@ -921,9 +922,9 @@ fn cpp_declaration_only_header_at_nested_path() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("Guide2DLineDemoAlgorithm,class"), "should find class: {stdout}");
-    assert!(stdout.contains("AlgorithmId,fn"), "should find declared method: {stdout}");
-    assert!(stdout.contains("Validate,fn"), "should find declared method: {stdout}");
+    assert!(stdout.contains("Guide2DLineDemoAlgorithm,Guide2DLineDemoAlgorithm,class"), "should find class: {stdout}");
+    assert!(stdout.contains("AlgorithmId,\"Guide2DLineDemoAlgorithm::AlgorithmId\",fn"), "should find declared method: {stdout}");
+    assert!(stdout.contains("Validate,\"Guide2DLineDemoAlgorithm::Validate\",fn"), "should find declared method: {stdout}");
 
     let out = cx_in(dir.path())
         .args(["symbols", "--file", "GuideModule/algorithm/Guide2DLineDemoAlgorithm.h"])
@@ -931,9 +932,9 @@ fn cpp_declaration_only_header_at_nested_path() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("Guide2DLineDemoAlgorithm,class"), "should find class: {stdout}");
-    assert!(stdout.contains("AlgorithmId,fn"), "should find declared method: {stdout}");
-    assert!(stdout.contains("Validate,fn"), "should find declared method: {stdout}");
+    assert!(stdout.contains("Guide2DLineDemoAlgorithm,Guide2DLineDemoAlgorithm,class"), "should find class: {stdout}");
+    assert!(stdout.contains("AlgorithmId,\"Guide2DLineDemoAlgorithm::AlgorithmId\",fn"), "should find declared method: {stdout}");
+    assert!(stdout.contains("Validate,\"Guide2DLineDemoAlgorithm::Validate\",fn"), "should find declared method: {stdout}");
 }
 
 #[test]

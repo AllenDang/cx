@@ -496,10 +496,11 @@ fn truncated_page_suggests_runnable_next_queries() {
     assert_eq!(follow_up.json_len(), 4);
 }
 
-/// Phase 3 (roadmap §6.2): several candidates for one name is an ambiguity that
-/// must be reported, not silently resolved by picking the first.
+/// Phase 5 (roadmap §5.2, §6.2): ambiguity is counted in *distinct symbols*,
+/// not rows.  A declaration plus its definition is one symbol at two locations
+/// and must not be announced as a conflict; genuinely different scopes must be.
 #[test]
-fn ambiguous_definition_reports_a_warning() {
+fn ambiguous_definition_reports_distinct_qualified_symbols() {
     let p = fixture_project(CORPUS);
     let out = run_cx(p.path(), &["--json", "definition", "--name", "run", "--all"]);
     let doc = out.json();
@@ -510,13 +511,37 @@ fn ambiguous_definition_reports_a_warning() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert_eq!(warnings.len(), 1, "{}", out.stdout);
+
+    // 12 rows, but two of them are declaration/definition pairs of the same
+    // qualified symbol, so only 10 distinct symbols exist.
+    assert_eq!(out.json_len(), 12, "{}", out.stdout);
     assert!(
-        warnings[0].starts_with("12 candidates share the name \"run\""),
+        warnings[0].starts_with("10 distinct symbols named \"run\":"),
         "{}",
         warnings[0]
     );
+    assert!(
+        warnings[0].contains("Narrow with --scope or --from"),
+        "{}",
+        warnings[0]
+    );
+    // Listed names are qualified and bounded (5 then an ellipsis).
+    assert!(warnings[0].contains("alpha::run"), "{}", warnings[0]);
+    assert!(warnings[0].contains("..."), "list must stay bounded: {}", warnings[0]);
 
-    // A single unambiguous match carries no warning.
+    // A C++ prototype plus its definition: one logical symbol, no warning.
+    let one_symbol = run_cx(
+        p.path(),
+        &["--json", "definition", "--name", "validate_param", "--all"],
+    );
+    assert_eq!(one_symbol.json_len(), 2, "decl + def\n{}", one_symbol.stdout);
+    assert!(
+        one_symbol.json()["warnings"].as_array().unwrap().is_empty(),
+        "declaration + definition of one symbol is not ambiguity: {}",
+        one_symbol.stdout
+    );
+
+    // A single unambiguous match carries no warning either.
     let single = run_cx(
         p.path(),
         &["--json", "definition", "--name", "run_all", "--all"],

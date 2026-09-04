@@ -73,6 +73,9 @@ enum Commands {
         /// Filter by symbol role (definition, declaration, heading, unknown)
         #[arg(long)]
         role: Option<index::SymbolRole>,
+        /// Glob matched against the qualified name (e.g. 'alpha::*')
+        #[arg(long)]
+        scope: Option<String>,
         /// List distinct symbol kinds with counts
         #[arg(long)]
         kinds: bool,
@@ -92,6 +95,9 @@ enum Commands {
         /// Filter by symbol role (e.g. --role declaration for a C++ prototype)
         #[arg(long)]
         role: Option<index::SymbolRole>,
+        /// Disambiguate by qualified-name glob (e.g. --scope 'alpha::*')
+        #[arg(long)]
+        scope: Option<String>,
         /// Max lines for body output (default 200)
         #[arg(long, default_value = "200")]
         max_lines: usize,
@@ -210,7 +216,7 @@ fn main() {
                 query::symbols(&idx, &filters, true, cli.json, &resolve_pagination(None))
             }
         }
-        Commands::Symbols { ref file, ref name, kind, role, kinds } => {
+        Commands::Symbols { ref file, ref name, kind, role, ref scope, kinds } => {
             let root = resolve_root(&cli.root, file.as_deref());
             let idx = index::Index::load_or_build(&root, &freshness);
             if kinds {
@@ -219,18 +225,20 @@ fn main() {
                 let filters = query::Filters {
                     file: file.as_deref(),
                     name_glob: name.as_deref(),
+                    scope_glob: scope.as_deref(),
                     kind,
                     role,
                 };
                 query::symbols(&idx, &filters, false, cli.json, &resolve_pagination(Some(100)))
             }
         }
-        Commands::Definition { ref name, ref from, kind, role, max_lines } => {
+        Commands::Definition { ref name, ref from, kind, role, ref scope, max_lines } => {
             let root = resolve_root(&cli.root, from.as_deref());
             let idx = index::Index::load_or_build(&root, &freshness);
             let default = if from.is_some() { None } else { Some(3) };
             let filters = query::Filters {
                 file: from.as_deref(),
+                scope_glob: scope.as_deref(),
                 kind,
                 role,
                 ..Default::default()

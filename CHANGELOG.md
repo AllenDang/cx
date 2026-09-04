@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `qualified` name on every symbol, built from lexical scope: `ange::EcsWorld::run`, `alpha::run`, `Tickable.run`. Modelled for Rust, C/C++ and TypeScript; empty means *unresolved*, never *top-level*.
+- `--scope <glob>` filter on `cx symbols` and `cx definition`, matched against the qualified name. It never matches a symbol whose scope is unresolved.
+- Ambiguity warnings now count *distinct symbols* and list their qualified names, so a C++ prototype plus its definition (one symbol, two locations) no longer looks like a conflict.
 - `freshness` in every JSON result: `{generation, mode, files_checked, files_updated, files_removed, files_skipped_missing_grammar}`, so an agent can prove which index state answered its query.
 - `cx refresh <paths>` re-indexes named files immediately by content hash and reports per-path status (`updated`/`removed`/`unchanged`/`not_indexed`). With no arguments it verifies the whole project.
 - `--fresh metadata|verified` selects how much verification a query performs. `metadata` (default) compares size + mtime; `verified` hashes contents and catches edits that preserve both.
@@ -21,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixture corpus (`tests/fixtures/agent_corpus`) and `scripts/bench.sh` for reproducible correctness and performance baselines.
 
 ### Changed
-- `INDEX_VERSION` 9 → 10; existing indexes rebuild automatically on first use. Index entries now store file size and a content hash (recorded from bytes already read, so indexing cost is unchanged).
+- `INDEX_VERSION` 10 → 11; existing indexes rebuild automatically on first use. Index entries now store lexical scope, file size, and a content hash (all recorded from data already available during parsing, so indexing cost is unchanged).
+- TOON and JSON symbol rows include a `qualified` column; `cx definition` plain-text output adds a `qualified:` line when the scope is resolved.
 - Ordinary queries now compare file size in addition to mtime, catching same-mtime edits that change length.
 - **Breaking (`--json` only):** JSON output is always an envelope object. Previously the root was a bare array unless results were truncated or offset. Read `results` for rows and `page` for `{total, offset, limit, truncated}`.
 - A successful query with zero results now returns a parseable envelope with `results: []` and exit 0, instead of printing nothing.
@@ -31,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TOON and JSON symbol rows include a `role` column; `cx definition` plain-text output includes a `role:` line.
 
 ### Fixed
+- `cx --json symbols` with zero matches printed nothing instead of the standard envelope, unlike every other command.
 - `cx --root /tmp/p overview /private/tmp/p/src/a.rs` no longer fails with "file not in index".
 - `cx refresh` no longer derives the project root from its path arguments, which could silently retarget cx at an unrelated directory and build a new index there.
 

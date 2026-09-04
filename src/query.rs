@@ -144,6 +144,10 @@ const NARROW_FROM: &str = "--from PATH";
 const NARROW_FILE: &str = "--file PATH";
 const NARROW_SUBDIR: &str = "cx overview <subdir>";
 
+/// Maximum number of distinct qualified names listed in an ambiguity warning
+/// before the rest are elided, so the warning itself stays bounded.
+const AMBIGUITY_LIST_LIMIT: usize = 5;
+
 /// Emit a compact pagination hint on stderr.
 fn emit_pagination_hint(total: usize, offset: usize, shown: usize, subject: &str, narrow_hint: &str) {
     let next_offset = offset + shown;
@@ -159,6 +163,9 @@ struct SymbolRowOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     file: Option<String>,
     name: String,
+    /// Fully qualified lexical name, or empty when cx does not model this
+    /// language's scopes (roadmap §5.3).
+    qualified: String,
     kind: String,
     role: String,
     signature: String,
@@ -169,6 +176,7 @@ struct SymbolRowWithRangeOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     file: Option<String>,
     name: String,
+    qualified: String,
     kind: String,
     role: String,
     range: String,
@@ -179,12 +187,20 @@ struct SymbolRowWithRangeOut {
 struct DefinitionResult {
     file: String,
     line: usize,
+    qualified: String,
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     truncated: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     lines: Option<usize>,
     body: String,
+}
+
+/// Qualified name for output: the modelled qualified name, or an empty string
+/// when the language's scopes are not modelled.  Empty means "unresolved", never
+/// "top level" — a top-level symbol in a modelled language reports its own name.
+fn qualified_or_empty(symbol: &Symbol) -> String {
+    symbol.qualified_name.clone().unwrap_or_default()
 }
 
 // --- Query implementations ---
@@ -204,6 +220,9 @@ pub struct Filters<'a> {
     pub file: Option<&'a Path>,
     /// Glob matched against the symbol name.
     pub name_glob: Option<&'a str>,
+    /// Glob matched against the qualified name, for disambiguating same-name
+    /// symbols in different scopes (e.g. `--scope 'alpha::*'`).
+    pub scope_glob: Option<&'a str>,
     pub kind: Option<SymbolKind>,
     pub role: Option<SymbolRole>,
 }
@@ -217,8 +236,13 @@ pub fn symbols(
     json: bool,
     pg: &Pagination,
 ) -> i32 {
-    let (file, name_glob, kind_filter, role_filter) =
-        (filters.file, filters.name_glob, filters.kind, filters.role);
+    let (file, name_glob, scope_glob, kind_filter, role_filter) = (
+        filters.file,
+        filters.name_glob,
+        filters.scope_glob,
+        filters.kind,
+        filters.role,
+    );
     // `ranges` is only set by `cx overview <file>`; report that as the query kind.
     let query_kind = if ranges { "overview" } else { "symbols" };
     let mut rows: Vec<SymbolRow<'_>> = Vec::new();
@@ -254,6 +278,17 @@ pub fn symbols(
                     continue;
                 }
 
+            // Scope filtering only matches symbols whose scope cx actually
+            // resolved; an unresolved symbol is never assumed to be in scope.
+            if let Some(pattern) = scope_glob {
+                let Some(qualified) = sym.qualified_name.as_deref() else {
+                    continue;
+                };
+                if !glob_match(pattern, qualified) {
+                    continue;
+                }
+            }
+
             rows.push(SymbolRow {
                 file: path,
                 symbol: sym,
@@ -261,9 +296,24 @@ pub fn symbols(
         }
     }
 
+    // An empty result set is a successful query with no matches, not an error,
+    // so it must still produce the standard envelope (roadmap §6.1/§6.2).
     if rows.is_empty() {
-        eprintln!("cx: no matches");
-        return 0;
+        let empty: Paginated<SymbolRowOut> = Paginated {
+            items: Vec::new(),
+            total: 0,
+            offset: pg.offset,
+            limit: pg.limit,
+        };
+        return emit(
+            json,
+            query_kind,
+            subject,
+            &index.freshness,
+            &empty,
+            "symbols",
+            NARROW_SYMBOLS,
+        );
     }
 
     rows.sort_by(|a, b| a.file.cmp(b.file).then(a.symbol.name.cmp(&b.symbol.name)));
@@ -276,6 +326,7 @@ pub fn symbols(
             .map(|r| SymbolRowWithRangeOut {
                 file: if single_file { None } else { Some(display_path(r.file)) },
                 name: r.symbol.name.clone(),
+                qualified: qualified_or_empty(r.symbol),
                 kind: r.symbol.kind.as_str().to_string(),
                 role: r.symbol.role.as_str().to_string(),
                 range: line_range(index, &mut line_cache, r.file, r.symbol.byte_range)
@@ -291,6 +342,7 @@ pub fn symbols(
             .map(|r| SymbolRowOut {
                 file: if single_file { None } else { Some(display_path(r.file)) },
                 name: r.symbol.name.clone(),
+                qualified: qualified_or_empty(r.symbol),
                 kind: r.symbol.kind.as_str().to_string(),
                 role: r.symbol.role.as_str().to_string(),
                 signature: r.symbol.signature.clone(),
@@ -356,10 +408,12 @@ pub fn definition(
     json: bool,
     pg: &Pagination,
 ) -> i32 {
-    let (from, kind_filter, role_filter) = (filters.file, filters.kind, filters.role);
+    let (from, scope_glob, kind_filter, role_filter) =
+        (filters.file, filters.scope_glob, filters.kind, filters.role);
     let from_rel = from.map(|f| make_relative(f, &index.root));
 
-    let mut matches: Vec<(&PathBuf, &Symbol)> = Vec::new();
+    // Language travels with each match so identity can be language-scoped.
+    let mut matches: Vec<(&PathBuf, &Symbol, &str)> = Vec::new();
     for (path, data) in &index.entries {
         for sym in &data.symbols {
             if sym.name == name {
@@ -371,7 +425,15 @@ pub fn definition(
                     && sym.role != role {
                         continue;
                     }
-                matches.push((path, sym));
+                if let Some(pattern) = scope_glob {
+                    let Some(qualified) = sym.qualified_name.as_deref() else {
+                        continue;
+                    };
+                    if !glob_match(pattern, qualified) {
+                        continue;
+                    }
+                }
+                matches.push((path, sym, data.meta.language.as_str()));
             }
         }
     }
@@ -380,7 +442,7 @@ pub fn definition(
         let is_dir = index.root.join(from_path).is_dir();
         let from_matches: Vec<_> = matches
             .iter()
-            .filter(|(path, _)| {
+            .filter(|(path, _, _)| {
                 if is_dir { path.starts_with(from_path) } else { *path == from_path }
             })
             .copied()
@@ -392,6 +454,26 @@ pub fn definition(
 
     // An empty match set is a successful query with no results, not an error,
     // so it flows through to the normal emit path (roadmap §6.2).
+
+    // Distinct logical symbols among the matches, by qualified identity.  A
+    // declaration and its definition share one identity, so this counts real
+    // ambiguity rather than counting locations (roadmap §5.2).
+    let mut distinct: Vec<String> = Vec::new();
+    for (_, sym, lang) in &matches {
+        let id = sym.stable_id(lang);
+        let key = id.logical_key();
+        let label = format!("{}:{}", key.0, key.1);
+        if !distinct.contains(&label) {
+            distinct.push(label);
+        }
+    }
+    // Sorted so the warning text is stable across runs: index iteration order is
+    // not, and an unstable warning is not something a test can pin.
+    distinct.sort_unstable();
+    let unresolved_scopes = matches
+        .iter()
+        .filter(|(_, sym, _)| sym.qualified_name.is_none())
+        .count();
 
     // Sort implementations ahead of signature-only sites, then by symbol
     // priority (types first), then by file path.  An agent asking for a
@@ -407,7 +489,7 @@ pub fn definition(
 
     let results: Vec<DefinitionResult> = paged_matches.items
         .iter()
-        .map(|(path, sym)| {
+        .map(|(path, sym, _)| {
             let (body, start_line) = read_body(&index.root, path, sym.byte_range)
                 .unwrap_or((String::new(), 0));
             let line_count = body.lines().count();
@@ -425,6 +507,7 @@ pub fn definition(
             DefinitionResult {
                 file: display_path(path),
                 line: start_line,
+                qualified: qualified_or_empty(sym),
                 role: sym.role.as_str().to_string(),
                 truncated: if truncated { Some(true) } else { None },
                 lines: if truncated { Some(line_count) } else { None },
@@ -441,13 +524,29 @@ pub fn definition(
                 next_queries.push(command_with_all());
             }
         }
-        // Several candidates sharing one name is an ambiguity, not a pick-one
-        // situation: report it instead of silently dropping candidates
-        // (roadmap §6.2).  Phase 5 replaces this with qualified identity.
+        // Report ambiguity in terms of distinct symbols, not row count: a C++
+        // prototype plus its definition is one symbol at two locations and must
+        // not be announced as a conflict (roadmap §6.2, §5.2).
         let mut warnings = Vec::new();
-        if paged_matches.total > 1 {
+        if distinct.len() > 1 {
+            let mut shown: Vec<&str> = distinct
+                .iter()
+                .take(AMBIGUITY_LIST_LIMIT)
+                .map(|d| d.split_once(':').map_or(d.as_str(), |(_, n)| n))
+                .collect();
+            let elided = distinct.len().saturating_sub(shown.len());
+            if elided > 0 {
+                shown.push("...");
+            }
             warnings.push(format!(
-                "{} candidates share the name \"{name}\"; ordered implementations first, not disambiguated by scope",
+                "{} distinct symbols named \"{name}\": {}. Narrow with --scope or --from.",
+                distinct.len(),
+                shown.join(", ")
+            ));
+        }
+        if unresolved_scopes > 0 {
+            warnings.push(format!(
+                "{unresolved_scopes} of {} matches have unresolved scope (language not modelled); they are not disambiguated",
                 paged_matches.total
             ));
         }
@@ -472,11 +571,22 @@ pub fn definition(
         if i > 0 {
             println!();
         }
-        print!("file: {}\nline: {}\nrole: {}", r.file, r.line, r.role);
+        print!("file: {}\nline: {}", r.file, r.line);
+        if !r.qualified.is_empty() {
+            print!("\nqualified: {}", r.qualified);
+        }
+        print!("\nrole: {}", r.role);
         if let Some(total) = r.lines {
             print!("\ntruncated: {total} lines total");
         }
         println!("\n---\n{}", r.body);
+    }
+
+    if distinct.len() > 1 {
+        eprintln!(
+            "cx: {} distinct symbols named \"{name}\" — narrow with --scope or --from",
+            distinct.len()
+        );
     }
 
     if paged_matches.was_truncated() {

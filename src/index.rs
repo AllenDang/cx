@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::language::{LangError, detect_language, download_names_for, parse_and_extract, primary_extension};
 
-pub const INDEX_VERSION: u32 = 10;
+pub const INDEX_VERSION: u32 = 11;
 
 /// Compute the cache path for a given project root.
 /// Returns `~/.cache/cx/indexes/<hash>.db` where hash is derived from the
@@ -185,11 +185,74 @@ pub struct Symbol {
     /// definition share `kind = Fn` but differ in role.
     #[serde(default)]
     pub role: SymbolRole,
+    /// Lexical containers enclosing this symbol, outermost first
+    /// (e.g. `["ange", "EcsWorld"]` for `ange::EcsWorld::run`).
+    ///
+    /// Empty means either genuinely top-level or not modelled — check
+    /// `qualified_name` to tell those apart.
+    #[serde(default)]
+    pub scope_path: Vec<String>,
+    /// Fully qualified lexical name, or `None` when cx does not model this
+    /// language's scopes yet (roadmap §5.3).
+    ///
+    /// `None` is deliberate: reporting the bare name as "qualified" would claim
+    /// a resolution that never happened.
+    #[serde(default)]
+    pub qualified_name: Option<String>,
     pub signature: String,
     pub byte_range: (usize, usize),
     /// Whether this symbol is a test (e.g. `#[test]` in Rust, `test` block in Zig).
     #[serde(default)]
     pub is_test: bool,
+}
+
+/// Serializable identity for a symbol, separate from its display name
+/// (roadmap §5.2).
+///
+/// Derived rather than stored: the index keeps the facts (language, qualified
+/// name, kind, signature) and this composes them on demand, so an index rewrite
+/// is not needed to change the identity scheme.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StableSymbolId {
+    pub language: String,
+    /// Qualified name when known, otherwise the bare name.
+    pub name: String,
+    /// False when `name` is unqualified because scopes are not modelled.
+    pub qualified: bool,
+    pub kind: SymbolKind,
+    /// Distinguishes overloads that share a qualified name.
+    pub signature_key: Option<String>,
+}
+
+impl StableSymbolId {
+    /// Identity ignoring overload signature.
+    ///
+    /// A declaration and its definition share this key, which lets a query tell
+    /// "one symbol seen at two locations" apart from "several distinct symbols
+    /// that happen to share a short name" (roadmap §6.2).
+    pub fn logical_key(&self) -> (&str, &str, SymbolKind) {
+        (&self.language, &self.name, self.kind)
+    }
+}
+
+impl Symbol {
+    /// Identity for this symbol in the given language.
+    ///
+    /// A declaration and its definition intentionally produce the same id: they
+    /// are one logical symbol observed at two locations, and `role` plus the
+    /// location keep them distinguishable.
+    pub fn stable_id(&self, language: &str) -> StableSymbolId {
+        StableSymbolId {
+            language: language.to_string(),
+            name: self
+                .qualified_name
+                .clone()
+                .unwrap_or_else(|| self.name.clone()),
+            qualified: self.qualified_name.is_some(),
+            kind: self.kind,
+            signature_key: (!self.signature.is_empty()).then(|| self.signature.clone()),
+        }
+    }
 }
 
 /// What a symbol location *is*, as opposed to what kind of thing it names.
@@ -974,6 +1037,8 @@ mod tests {
                 name: "foo".to_string(),
                 kind: SymbolKind::Fn,
                 role: SymbolRole::Definition,
+                scope_path: Vec::new(),
+                qualified_name: Some("foo".to_string()),
                 signature: "pub fn foo(x: i32) -> bool".to_string(),
                 byte_range: (100, 500),
                 is_test: false,
@@ -982,6 +1047,8 @@ mod tests {
                 name: "Bar".to_string(),
                 kind: SymbolKind::Struct,
                 role: SymbolRole::Definition,
+                scope_path: vec!["outer".to_string()],
+                qualified_name: Some("outer::Bar".to_string()),
                 signature: "pub struct Bar".to_string(),
                 byte_range: (600, 800),
                 is_test: false,
@@ -990,6 +1057,8 @@ mod tests {
                 name: "test_bar".to_string(),
                 kind: SymbolKind::Fn,
                 role: SymbolRole::Declaration,
+                scope_path: Vec::new(),
+                qualified_name: None,
                 signature: "fn test_bar()".to_string(),
                 byte_range: (900, 1000),
                 is_test: true,
@@ -1006,6 +1075,48 @@ mod tests {
         assert!(decoded[2].is_test);
         assert_eq!(decoded[0].role, SymbolRole::Definition);
         assert_eq!(decoded[2].role, SymbolRole::Declaration);
+        assert_eq!(decoded[1].scope_path, vec!["outer".to_string()]);
+        assert_eq!(decoded[1].qualified_name.as_deref(), Some("outer::Bar"));
+        assert_eq!(
+            decoded[2].qualified_name, None,
+            "unmodelled scope stays unresolved rather than claiming the bare name"
+        );
+    }
+
+    #[test]
+    fn test_stable_id_separates_identity_from_display_name() {
+        let qualified = Symbol {
+            name: "run".to_string(),
+            kind: SymbolKind::Fn,
+            role: SymbolRole::Definition,
+            scope_path: vec!["ange".to_string(), "EcsWorld".to_string()],
+            qualified_name: Some("ange::EcsWorld::run".to_string()),
+            signature: "void EcsWorld::run()".to_string(),
+            byte_range: (0, 10),
+            is_test: false,
+        };
+        let id = qualified.stable_id("cpp");
+        assert_eq!(id.name, "ange::EcsWorld::run");
+        assert!(id.qualified);
+
+        // Same short name in another scope must not produce the same identity.
+        let other = Symbol {
+            scope_path: vec!["alpha".to_string()],
+            qualified_name: Some("alpha::run".to_string()),
+            signature: "void run()".to_string(),
+            ..qualified.clone()
+        };
+        assert_ne!(id, other.stable_id("cpp"));
+
+        // Unmodelled scope is reported as unqualified, not silently "qualified".
+        let unmodelled = Symbol {
+            scope_path: Vec::new(),
+            qualified_name: None,
+            ..qualified.clone()
+        };
+        let unmodelled_id = unmodelled.stable_id("lua");
+        assert_eq!(unmodelled_id.name, "run");
+        assert!(!unmodelled_id.qualified);
     }
 
     #[test]

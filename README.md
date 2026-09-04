@@ -68,7 +68,7 @@ In sessions with cx enabled, we measured **58% fewer Read calls** and **40-55% f
 ## How cx compares
 
 | Tool | Overlap | cx difference |
-|------|---------|---------------|
+| ------ | --------- | --------------- |
 | **ctags** | Symbol indexing | Tree-sitter instead of regex, persistent db, built-in query CLI |
 | **LSP** | Go-to-definition, find references, symbol search | No daemon, no compilation, no project setup — just parse and query |
 | **ripgrep** | Finding code by name | Semantic — `cx definition --name X` vs grep-then-read-5-files |
@@ -107,11 +107,11 @@ Single file -- full symbol table with kinds, roles, line ranges, and signatures:
 ```
 $ cx overview src/main.rs
 
-[12]{name,kind,role,range,signature}:
-  Cli,struct,definition,"16-43",struct Cli
-  Commands,enum,definition,"46-119",enum Commands
-  main,fn,definition,"160-260",fn main()
-  resolve_root,fn,definition,"149-158","fn resolve_root(explicit: &Option<PathBuf>, path_hint: Option<&Path>) -> PathBuf"
+[12]{name,qualified,kind,role,range,signature}:
+  Cli,Cli,struct,definition,"16-48",struct Cli
+  Commands,Commands,enum,definition,"51-135",enum Commands
+  main,main,fn,definition,"180-275",fn main()
+  resolve_root,resolve_root,fn,definition,"169-178","fn resolve_root(explicit: &Option<PathBuf>, path_hint: Option<&Path>) -> PathBuf"
   ...
 ```
 
@@ -122,10 +122,10 @@ Markdown files are indexed by headings. A Markdown definition returns the full s
 ```
 $ cx overview README.md
 
-[3]{name,kind,role,range,signature}:
-  cx,heading,heading,"1-278",# cx
-  Install,heading,heading,"7-30",## Install
-  Usage,heading,heading,"77-199",## Usage
+[3]{name,qualified,kind,role,range,signature}:
+  cx,"",heading,heading,"1-278",# cx
+  Install,"",heading,heading,"7-30",## Install
+  Usage,"",heading,heading,"77-199",## Usage
 ```
 
 ### Declaration vs definition
@@ -144,13 +144,13 @@ Roles come from explicit grammar captures, never from guessing whether a `{` fol
 ```
 $ cx symbols --file include/ange/ecs.hpp
 
-[6]{name,kind,role,signature}:
-  EcsWorld,class,definition,class EcsWorld
-  EcsWorld,fn,declaration,EcsWorld();
-  ange,module,definition,namespace ange
-  entity_count,fn,declaration,int entity_count() const;
-  run,fn,declaration,void run();
-  validate_param,fn,declaration,"void validate_param(const std::string& name, int value);"
+[6]{name,qualified,kind,role,signature}:
+  EcsWorld,"ange::EcsWorld",class,definition,class EcsWorld
+  EcsWorld,"ange::EcsWorld::EcsWorld",fn,declaration,EcsWorld();
+  ange,ange,module,definition,namespace ange
+  entity_count,"ange::EcsWorld::entity_count",fn,declaration,int entity_count() const;
+  run,"ange::EcsWorld::run",fn,declaration,void run();
+  validate_param,"ange::validate_param",fn,declaration,"void validate_param(const std::string& name, int value);"
 ```
 
 `cx definition` sorts implementations ahead of signature-only sites, so the first result is the body. Use `--role declaration` when you specifically want the prototype, or `--role definition` to exclude prototypes entirely.
@@ -160,14 +160,41 @@ $ cx symbols --file include/ange/ecs.hpp
 ```
 $ cx symbols --kind fn
 
-[15]{file,name,kind,role,signature}:
-  src/output.rs,print_toon,fn,definition,"pub fn print_toon<T: Serialize>(value: &T)"
-  src/query.rs,symbols,fn,definition,"pub fn symbols(...) -> i32"
-  src/query.rs,definition,fn,definition,"pub fn definition(...) -> i32"
+[15]{file,name,qualified,kind,role,signature}:
+  src/output.rs,print_toon,print_toon,fn,definition,"pub fn print_toon<T: Serialize>(value: &T)"
+  src/query.rs,symbols,symbols,fn,definition,"pub fn symbols(...) -> i32"
+  src/query.rs,definition,definition,fn,definition,"pub fn definition(...) -> i32"
   ...
 ```
 
-Filters: `--kind`, `--role`, `--name` (glob), `--file`
+Filters: `--kind`, `--role`, `--scope` (glob on the qualified name), `--name` (glob), `--file`
+
+### Qualified names -- telling same-named symbols apart
+
+Every symbol carries a `qualified` name built from its lexical scope, so twelve `run` symbols stay twelve distinct things:
+
+```
+$ cx symbols --name run
+
+[12]{file,name,qualified,kind,role,signature}:
+  generated/gen_api.cpp,run,gen::run,fn,definition,void run()
+  include/ange/ecs.hpp,run,ange::EcsWorld::run,fn,declaration,void run();
+  src/app.ts,run,Tickable.run,fn,declaration,"run(): number"
+  src/lib.rs,run,alpha::run,fn,definition,pub fn run() -> u32
+  src/lib.rs,run,beta::run,fn,definition,pub fn run() -> u32
+  ...
+```
+
+Narrow to one scope with `--scope`:
+
+```bash
+cx definition --name run --scope 'beta::Runner::*'
+cx symbols --name run --scope 'alpha::*'
+```
+
+Scopes are modelled for Rust, C/C++ and TypeScript (`::` for the first two, `.` for TypeScript). For other languages the `qualified` column is **empty**, which means *unresolved* -- not *top level*. `--scope` never matches an unresolved symbol, so it cannot produce a false positive.
+
+Qualified names come from two syntactic facts: enclosing scope nodes, and qualifiers written at the definition site (`void EcsWorld::run()`). No import or type resolution is involved, so `cx` does not claim to know which `run` a call refers to.
 
 Public/exported symbols are identifiable from their signatures (e.g. `pub fn` in Rust, `export function` in TypeScript).
 
@@ -282,6 +309,9 @@ With `--json`, pagination facts live in `page` and the exact follow-up commands 
 {
   "schema_version": 1,
   "query": { "kind": "symbols", "subject": "run" },
+  "freshness": { "generation": 8, "mode": "metadata", "files_checked": 48,
+                 "files_updated": 0, "files_removed": 0,
+                 "files_skipped_missing_grammar": 0 },
   "page": { "total": 12, "offset": 0, "limit": 4, "truncated": true },
   "results": [ ... ],
   "warnings": [],
