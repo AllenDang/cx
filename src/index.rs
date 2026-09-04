@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::language::{LangError, detect_language, download_names_for, parse_and_extract, primary_extension};
 
-pub const INDEX_VERSION: u32 = 11;
+pub const INDEX_VERSION: u32 = 12;
 
 /// Compute the cache path for a given project root.
 /// Returns `~/.cache/cx/indexes/<hash>.db` where hash is derived from the
@@ -33,6 +33,7 @@ fn index_cache_dir() -> PathBuf {
 const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 const FILES_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("files");
 const SYMBOLS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("symbols");
+const IMPORTS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("imports");
 
 pub struct Index {
     /// Canonical project root: absolute, normalized, symlinks resolved.
@@ -133,6 +134,9 @@ enum CrawlResult {
 pub struct FileData {
     pub meta: FileEntry,
     pub symbols: Vec<Symbol>,
+    /// Import/include targets as written in the source (roadmap §8).
+    /// Empty for languages whose imports cx does not model.
+    pub imports: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -380,7 +384,10 @@ fn load_entries(db: &impl ReadableDatabase) -> Option<(HashMap<PathBuf, FileData
             let Ok((key, val)) = item else { continue };
             let path = PathBuf::from(key.value());
             if let Some(meta) = decode_file_entry(val.value()) {
-                entries.insert(path, FileData { meta, symbols: Vec::new() });
+                entries.insert(
+                    path,
+                    FileData { meta, symbols: Vec::new(), imports: Vec::new() },
+                );
             }
         }
     }
@@ -391,6 +398,16 @@ fn load_entries(db: &impl ReadableDatabase) -> Option<(HashMap<PathBuf, FileData
             let syms: Vec<Symbol> = bincode::deserialize(val.value()).unwrap_or_default();
             if let Some(data) = entries.get_mut(&path) {
                 data.symbols = syms;
+            }
+        }
+    }
+    if let Ok(table) = read_txn.open_table(IMPORTS_TABLE) {
+        for item in table.iter().into_iter().flatten() {
+            let Ok((key, val)) = item else { continue };
+            let path = PathBuf::from(key.value());
+            let imports: Vec<String> = bincode::deserialize(val.value()).unwrap_or_default();
+            if let Some(data) = entries.get_mut(&path) {
+                data.imports = imports;
             }
         }
     }
@@ -708,7 +725,7 @@ impl Index {
             .map(|(abs_path, rel_path, lang, mtime)| {
                 let result = match fs::read(abs_path) {
                     Ok(source) => match parse_and_extract(lang, &source, abs_path) {
-                        Ok(symbols) => CrawlResult::Indexed(
+                        Ok(parse) => CrawlResult::Indexed(
                             rel_path.clone(),
                             FileData {
                                 // Size and hash come from the bytes just read,
@@ -719,7 +736,8 @@ impl Index {
                                     content_hash(&source),
                                     lang,
                                 ),
-                                symbols,
+                                symbols: parse.symbols,
+                                imports: parse.imports,
                             },
                         ),
                         Err(LangError::NotInstalled(name)) => CrawlResult::MissingLang(name),
@@ -806,8 +824,8 @@ impl Index {
             }
             let abs_path = self.root.join(&file.rel_path);
             let Ok(source) = fs::read(&abs_path) else { continue };
-            let symbols = match parse_and_extract(file.lang, &source, &abs_path) {
-                Ok(syms) => syms,
+            let parse = match parse_and_extract(file.lang, &source, &abs_path) {
+                Ok(parse) => parse,
                 Err(LangError::NotInstalled(name)) => {
                     missing_langs.insert(name);
                     continue;
@@ -825,7 +843,8 @@ impl Index {
                         content_hash(&source),
                         file.lang,
                     ),
-                    symbols,
+                    symbols: parse.symbols,
+                    imports: parse.imports,
                 },
             );
             changed_paths.push(file.rel_path.clone());
@@ -866,10 +885,15 @@ impl Index {
                 eprintln!("cx: failed to open symbols table — rebuild with: cx cache clean");
                 return;
             };
+            let Ok(mut imports_table) = write_txn.open_table(IMPORTS_TABLE) else {
+                eprintln!("cx: failed to open imports table — rebuild with: cx cache clean");
+                return;
+            };
             for path in &scan.deleted {
                 let key = path.to_string_lossy();
                 let _ = files_table.remove(key.as_ref());
                 let _ = syms_table.remove(key.as_ref());
+                let _ = imports_table.remove(key.as_ref());
             }
             for path in &changed_paths {
                 if let Some(data) = self.entries.get(path) {
@@ -881,6 +905,9 @@ impl Index {
                             let _ = syms_table.insert(key.as_ref(), sym_bytes.as_slice());
                         }
                         Err(e) => eprintln!("cx: failed to serialize symbols for {key}: {e}"),
+                    }
+                    if let Ok(import_bytes) = bincode::serialize(&data.imports) {
+                        let _ = imports_table.insert(key.as_ref(), import_bytes.as_slice());
                     }
                 }
             }
@@ -911,6 +938,7 @@ impl Index {
         // Delete and recreate tables to clear stale entries
         let _ = write_txn.delete_table(FILES_TABLE);
         let _ = write_txn.delete_table(SYMBOLS_TABLE);
+        let _ = write_txn.delete_table(IMPORTS_TABLE);
 
         // Write version
         {
@@ -924,7 +952,7 @@ impl Index {
             let _ = table.insert("generation", next_generation.to_le_bytes().as_slice());
         }
 
-        // Write files and symbols
+        // Write files, symbols and imports
         {
             let Ok(mut files_table) = write_txn.open_table(FILES_TABLE) else {
                 eprintln!("cx: failed to open files table — rebuild with: cx cache clean");
@@ -934,6 +962,10 @@ impl Index {
                 eprintln!("cx: failed to open symbols table — rebuild with: cx cache clean");
                 return;
             };
+            let Ok(mut imports_table) = write_txn.open_table(IMPORTS_TABLE) else {
+                eprintln!("cx: failed to open imports table — rebuild with: cx cache clean");
+                return;
+            };
             for (path, data) in &self.entries {
                 let key = path.to_string_lossy();
                 let entry_bytes = encode_file_entry(&data.meta);
@@ -941,6 +973,9 @@ impl Index {
                 match bincode::serialize(&data.symbols) {
                     Ok(sym_bytes) => { let _ = syms_table.insert(key.as_ref(), sym_bytes.as_slice()); }
                     Err(e) => eprintln!("cx: failed to serialize symbols for {key}: {e}"),
+                }
+                if let Ok(import_bytes) = bincode::serialize(&data.imports) {
+                    let _ = imports_table.insert(key.as_ref(), import_bytes.as_slice());
                 }
             }
         }

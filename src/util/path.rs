@@ -65,6 +65,33 @@ fn strip_verbatim(path: &Path) -> PathBuf {
     PathBuf::from(chars.into_iter().collect::<String>())
 }
 
+/// Join a relative specifier onto a base directory, folding `.` and `..`
+/// lexically without touching the filesystem.
+///
+/// Used to resolve written import paths (e.g. a TypeScript `../app`) against the
+/// importing file's directory, where the target may not exist on disk under that
+/// exact name yet an extension still has to be tried.
+pub fn lexical_join(base: &Path, relative: &str) -> PathBuf {
+    let mut out: Vec<String> = base
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => Some(s.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect();
+
+    for segment in relative.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            other => out.push(other.to_string()),
+        }
+    }
+    PathBuf::from(out.join("/"))
+}
+
 fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -93,6 +120,24 @@ fn normalize(path: &Path) -> PathBuf {
 mod tests {
     use super::{canonical, normalize};
     use std::path::Path;
+
+    #[test]
+    fn lexical_join_folds_relative_specifiers() {
+        use super::lexical_join;
+        assert_eq!(
+            lexical_join(Path::new("src"), "./lib/helper"),
+            Path::new("src/lib/helper")
+        );
+        assert_eq!(
+            lexical_join(Path::new("src/lib"), "../app"),
+            Path::new("src/app")
+        );
+        assert_eq!(lexical_join(Path::new(""), "./a"), Path::new("a"));
+        assert_eq!(
+            lexical_join(Path::new("a/b/c"), "../../d"),
+            Path::new("a/d")
+        );
+    }
 
     #[test]
     fn normalizes_parent_components() {

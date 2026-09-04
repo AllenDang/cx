@@ -743,6 +743,69 @@ pub fn references(
     }
 }
 
+// --- Repository map ---
+
+/// Emit the bounded repository map (roadmap §8).
+///
+/// Notes explaining what was excluded and how rows were ranked travel in
+/// `warnings` under `--json` and on stderr otherwise, so the ranking is never
+/// presented as self-evident.
+pub fn map_report(
+    index: &Index,
+    opts: &crate::map::MapOptions<'_>,
+    json: bool,
+    pg: &Pagination,
+) -> i32 {
+    let report = crate::map::build(index, opts);
+    let paged = paginate(report.rows, pg);
+
+    if json {
+        let mut next_queries = Vec::new();
+        if paged.was_truncated() {
+            next_queries.push(command_with_offset(paged.offset + paged.items.len()));
+            if paged.limit.is_some() {
+                next_queries.push(command_with_all());
+            }
+        }
+        let mut warnings = report.notes.clone();
+        warnings.push(format!("ranked by {}", report.ranked_by));
+        let envelope = Envelope::new(
+            QueryInfo::new("map", None),
+            index.freshness.clone(),
+            paged.page_info(),
+            &paged.items,
+        )
+        .with_warnings(warnings)
+        .with_next_queries(next_queries);
+        print_json(&envelope);
+        return 0;
+    }
+
+    if paged.items.is_empty() {
+        eprintln!("cx: no indexed files match this map's filters");
+        for note in &report.notes {
+            eprintln!("cx: {note}");
+        }
+        return 0;
+    }
+
+    print_toon(&paged.items);
+    for note in &report.notes {
+        eprintln!("cx: {note}");
+    }
+    eprintln!("cx: ranked by {}", report.ranked_by);
+    if paged.was_truncated() {
+        emit_pagination_hint(
+            paged.total,
+            paged.offset,
+            paged.items.len(),
+            "subsystems",
+            "--depth N | --exclude GLOB",
+        );
+    }
+    0
+}
+
 // --- Refresh ---
 
 /// What `cx refresh` did to one requested path.
@@ -847,6 +910,13 @@ const fn symbol_priority(kind: SymbolKind) -> u8 {
         | SymbolKind::Module | SymbolKind::Event | SymbolKind::Heading => 1,
         SymbolKind::Field => 2,
     }
+}
+
+/// Check if a file path looks like a test file based on naming conventions.
+///
+/// Shared with the repository map, which classifies paths the same way.
+pub(crate) fn is_test_path(path: &Path) -> bool {
+    is_test_file(path)
 }
 
 /// Check if a file path looks like a test file based on naming conventions.

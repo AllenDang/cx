@@ -252,6 +252,30 @@ Use `--file src/index.rs` to scope the search to a single file. Includes both de
 
 References are computed on-the-fly via AST walking (not indexed), so results are always fresh.
 
+### Map -- bounded repository orientation
+
+`cx overview` shows one directory. `cx map` shows the whole repository as subsystems, with resolved import edges and a stated ranking:
+
+```
+$ cx map --depth 2
+
+[8]{subsystem,class,files,symbols,tests,depends_on,dependents,external_imports,api}:
+  src/language/,production,21,209,0,src/,1,26,"FileParse, Heading, LANGUAGES, LangError, ..."
+  src/,mixed,7,196,0,"src/language/, src/util/",1,32,"CacheAction, Cli, Commands, ..."
+  src/util/,production,4,33,0,"",1,8,"absolute_normalize, canonical, find_project_root, ..."
+  docs/,docs,7,93,0,"",0,0,""
+cx: 6 files excluded as test (use --tests)
+cx: ranked by dependents desc, then symbols desc, then name
+```
+
+- **Ranked by fan-in** (`dependents`), then symbol count. The basis is always printed, so the ordering is never something you have to infer.
+- **Vendor, generated and test paths are excluded by default**, and every exclusion is reported with the flag that restores it (`--include-vendor`, `--include-generated`, `--tests`). `--exclude <glob>` is repeatable.
+- **Edges are only claimed when an import resolves to an indexed file.** Anything else is counted as `external_imports`, and an import matching several files is reported as unresolved rather than pointed at an arbitrary one. Import edges are modelled for C/C++ `#include`, Rust `use crate::…`, and TypeScript relative imports.
+- **`api` samples suppress low-information names** (`run`, `get`, `new`, `name`, …) so the column says something about the subsystem.
+- `--depth N` controls how deep the subsystem grouping goes; results paginate like every other command.
+
+`overview` is unchanged and remains the cheapest entry point.
+
 ### Freshness -- proving the index matches your edits
 
 Every result reports which index generation answered it and how that was checked:

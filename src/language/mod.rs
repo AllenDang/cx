@@ -6,10 +6,14 @@ use crate::index::{Symbol, SymbolKind};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{LazyLock, RwLock};
-use tree_sitter::{Parser, Query};
+use tree_sitter::{Parser, Query, StreamingIterator};
 
 /// Cache compiled queries keyed by resolved grammar name (e.g. "rust", "tsx").
 static QUERY_CACHE: LazyLock<RwLock<HashMap<&'static str, Query>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Separate cache for import queries, keyed the same way.
+static IMPORT_QUERY_CACHE: LazyLock<RwLock<HashMap<&'static str, Query>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 // --- Language registry ---
@@ -354,21 +358,120 @@ pub fn find_references(lang: &str, source: &[u8], path: &Path, name: &str) -> Re
     Ok(refs)
 }
 
+/// Everything one parse of a file yields.
+pub struct FileParse {
+    pub symbols: Vec<Symbol>,
+    /// Import/include targets exactly as written in the source, deduplicated.
+    ///
+    /// Raw text, not resolved paths: resolution is the caller's job and is
+    /// reported separately so an unresolvable import is never invented
+    /// (roadmap §8).
+    pub imports: Vec<String>,
+}
+
+/// Tree-sitter pattern capturing import/include targets as `@import`.
+///
+/// Only languages whose imports are a written path or module path are modelled;
+/// the rest report no imports rather than guessing.
+fn import_query(lang: &str) -> Option<&'static str> {
+    match lang {
+        "c" | "cpp" => Some("(preproc_include path: (_) @import)"),
+        "rust" => Some("(use_declaration argument: (_) @import)"),
+        "typescript" => Some(
+            r#"
+            (import_statement source: (string) @import)
+            (export_statement source: (string) @import)
+            "#,
+        ),
+        _ => None,
+    }
+}
+
+/// Strip the punctuation a language wraps its import targets in.
+fn clean_import(text: &str) -> String {
+    text.trim()
+        .trim_start_matches(['"', '<', '\''])
+        .trim_end_matches(['"', '>', '\''])
+        .trim()
+        .to_string()
+}
+
+/// Extract import/include targets from an already-parsed tree.
+fn extract_imports(
+    lang: &str,
+    grammar_name: &'static str,
+    tree: &tree_sitter::Tree,
+    source: &[u8],
+) -> Vec<String> {
+    let Some(pattern) = import_query(lang) else {
+        return Vec::new();
+    };
+
+    let run = |query: &Query| -> Vec<String> {
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(query, tree.root_node(), source);
+        let mut out: Vec<String> = Vec::new();
+        while let Some(m) = matches.next() {
+            for capture in m.captures {
+                if let Ok(text) = capture.node.utf8_text(source) {
+                    let cleaned = clean_import(text);
+                    if !cleaned.is_empty() && !out.contains(&cleaned) {
+                        out.push(cleaned);
+                    }
+                }
+            }
+        }
+        out
+    };
+
+    {
+        let cache = IMPORT_QUERY_CACHE
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(query) = cache.get(grammar_name) {
+            return run(query);
+        }
+    }
+
+    let mut cache = IMPORT_QUERY_CACHE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let query = match cache.entry(grammar_name) {
+        std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+        std::collections::hash_map::Entry::Vacant(e) => {
+            match Query::new(&tree.language(), pattern) {
+                Ok(q) => e.insert(q),
+                // A grammar without these node kinds is not an error; it simply
+                // has no imports to report.
+                Err(_) => return Vec::new(),
+            }
+        }
+    };
+    run(query)
+}
+
 /// Parse a file and extract symbols for the given language.
 /// `path` is used to distinguish .tsx from .ts for grammar selection.
-pub fn parse_and_extract(lang: &str, source: &[u8], path: &Path) -> Result<Vec<Symbol>, LangError> {
+pub fn parse_and_extract(lang: &str, source: &[u8], path: &Path) -> Result<FileParse, LangError> {
     if lang == "markdown" {
         parse_source(lang, source, path)?;
-        return Ok(markdown::extract_headings(source));
+        return Ok(FileParse {
+            symbols: markdown::extract_headings(source),
+            imports: Vec::new(),
+        });
     }
 
     let (config, tree, grammar_name) = parse_source(lang, source, path)?;
+    let imports = extract_imports(lang, grammar_name, &tree, source);
 
     // Fast path: read lock for cache hits (concurrent reads don't block each other)
     {
         let cache = QUERY_CACHE.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(query) = cache.get(grammar_name) {
-            return Ok(extract::extract_symbols(config, query, &tree, source));
+            return Ok(FileParse {
+                symbols: extract::extract_symbols(config, query, &tree, source),
+                imports,
+            });
         }
     }
 
@@ -378,7 +481,10 @@ pub fn parse_and_extract(lang: &str, source: &[u8], path: &Path) -> Result<Vec<S
         Query::new(&tree.language(), config.query).expect("query compilation failed")
     });
 
-    Ok(extract::extract_symbols(config, query, &tree, source))
+    Ok(FileParse {
+        symbols: extract::extract_symbols(config, query, &tree, source),
+        imports,
+    })
 }
 
 #[cfg(test)]

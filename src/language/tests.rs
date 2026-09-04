@@ -17,7 +17,17 @@ fn init_grammar_cache() {
 
 fn extract(lang: &str, src: &str, file: &str) -> Vec<Symbol> {
     init_grammar_cache();
-    parse_and_extract(lang, src.as_bytes(), &PathBuf::from(file)).unwrap()
+    parse_and_extract(lang, src.as_bytes(), &PathBuf::from(file))
+        .unwrap()
+        .symbols
+}
+
+/// Import/include targets extracted from a source snippet.
+fn extract_imports_of(lang: &str, src: &str, file: &str) -> Vec<String> {
+    init_grammar_cache();
+    parse_and_extract(lang, src.as_bytes(), &PathBuf::from(file))
+        .unwrap()
+        .imports
 }
 
 // --- Markdown ---
@@ -1592,4 +1602,50 @@ fn languages_without_a_declaration_form_report_definitions() {
     assert_eq!(go[0].role, SymbolRole::Definition);
     let py = extract("python", "def run():\n    return 1\n", "a.py");
     assert_eq!(py[0].role, SymbolRole::Definition);
+}
+
+// --- Import/include extraction (roadmap §8) ---
+
+#[test]
+fn cpp_includes_are_extracted_without_punctuation() {
+    let src = "#include \"ange/ecs.hpp\"\n#include <vector>\n\nvoid f() {}\n";
+    let imports = extract_imports_of("cpp", src, "a.cpp");
+    assert_eq!(imports, vec!["ange/ecs.hpp", "vector"]);
+}
+
+#[test]
+fn c_includes_are_extracted() {
+    let src = "#include <stdio.h>\n#include \"local.h\"\nint main(void) { return 0; }\n";
+    let imports = extract_imports_of("c", src, "a.c");
+    assert_eq!(imports, vec!["stdio.h", "local.h"]);
+}
+
+#[test]
+fn rust_use_declarations_are_extracted() {
+    let src = "use std::collections::HashMap;\nuse crate::index::Symbol;\nfn f() {}\n";
+    let imports = extract_imports_of("rust", src, "a.rs");
+    assert_eq!(imports, vec!["std::collections::HashMap", "crate::index::Symbol"]);
+}
+
+#[test]
+fn typescript_import_sources_are_extracted() {
+    let src = "import { A } from './a';\nimport B from \"../b\";\nexport { C } from './c';\n";
+    let imports = extract_imports_of("typescript", src, "a.ts");
+    assert_eq!(imports, vec!["./a", "../b", "./c"]);
+}
+
+#[test]
+fn duplicate_imports_are_collapsed() {
+    let src = "#include \"same.h\"\n#include \"same.h\"\n";
+    let imports = extract_imports_of("cpp", src, "a.cpp");
+    assert_eq!(imports, vec!["same.h"]);
+}
+
+#[test]
+fn unmodelled_languages_report_no_imports() {
+    // Python imports exist but are not modelled yet: report nothing rather than
+    // a partial guess (roadmap §8).
+    assert!(extract_imports_of("python", "import os\n", "a.py").is_empty());
+    assert!(extract_imports_of("go", "import \"fmt\"\n", "a.go").is_empty());
+    assert!(extract_imports_of("markdown", "# Title\n", "a.md").is_empty());
 }

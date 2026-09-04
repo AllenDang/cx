@@ -10,9 +10,11 @@ Usage: cx [OPTIONS] <COMMAND>
 
 Commands:
   overview [OPTIONS] <PATH>             Table of contents — symbols + ranges + signatures for a file, or symbol names for a directory
+  map [OPTIONS]                         Bounded repository map — subsystems, sizes, resolved import edges
   symbols [OPTIONS]                     Search symbols across project
   definition [OPTIONS] --name <NAME>    Get a function/type/... body without reading the whole file (default limit: 3)
   references [OPTIONS] --name <NAME>    Find all usages of a symbol across the project
+  refresh [PATHS]...                    Re-index the named files now, by content hash
   lang [OPTIONS] <SUBCOMMAND>           Manage language grammars (sub-commands: add, remove, list, help)
   help [COMMAND]                        Full command/option list or help on the given subcommand(s)
 
@@ -20,6 +22,7 @@ Options:
       --root <ROOT>      Project root (defaults to git root)
       --json             Emit JSON instead of TOON
       --no-tests         Exclude test files and test symbols from results (`*/tests/* and `*.test.ts`, test_*.py`, ...)
+      --fresh <MODE>     Index verification before answering: metadata (default) or verified
 Pagination options:
       --limit <LIMIT>    Max number of results to return (overrides per-command default)
       --offset <N>       Skip the first N results (not counted against limit)
@@ -27,7 +30,7 @@ Pagination options:
 ```
 
 Prefer cx over reading files. Zoom in until you have what you need, then stop:
-`overview` > `symbols` > `definition` or `references`.
+`map` (whole repo) > `overview` > `symbols` > `definition` or `references`.
 
 Fall back to the Read tool when `cx` can't represent the target (anonymous functions, JSX-inline components, dynamic
 dispatch, string-keyed lookups, non-symbol regions).
@@ -59,6 +62,7 @@ dispatch, string-keyed lookups, non-symbol regions).
 ## Common Recipes & Extra Info
 
 ```
+cx map [--depth N] [--exclude GLOB]                  whole-repo orientation: subsystems, sizes, import edges
 cx overview DIR --full                               `--full` also includes kind/range/signature for direct files
 cx symbols [--kind K] [--name GLOB] [--file PATH]    search symbols project-wide
 cx symbols --role declaration                        signature-only sites (C/C++ prototypes, trait/interface members)
@@ -81,6 +85,9 @@ cx refresh PATH...                                   re-index the named files no
 
 ## Key patterns
 
+- New to a repository? Start with `cx map` (subsystems, ranked by how many other subsystems depend on them), then
+  `cx overview <subsystem>` to drill in. `map` excludes vendor/generated/test paths by default and prints what it
+  excluded; its `depends_on` edges only appear when an import resolves to an indexed file.
 - Start with `cx overview .`, drill into subdirectories — cheaper than ls + reading files.
 - **After you edit files, run `cx refresh <the paths you changed>` before querying them again.** Ordinary
   queries auto-detect changes by size+mtime, which misses an edit that preserves both; `cx refresh` hashes

@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `cx map`: bounded repository orientation. Groups files into subsystems (`--depth N`), reports sizes and test/vendor/generated/docs classification, and shows import edges that resolve to an indexed file. Ranked by fan-in with the ranking basis printed; vendor, generated and test paths are excluded by default and every exclusion is reported with the flag that restores it (`--include-vendor`, `--include-generated`, `--tests`, plus repeatable `--exclude <glob>`). Low-information symbol names are suppressed from API samples.
+- Import/include targets are now indexed for C/C++ (`#include`), Rust (`use`), and TypeScript (`import`/`export … from`). Imports that match no indexed file are counted as external; imports matching several are reported unresolved rather than pointed at an arbitrary one.
 - `qualified` name on every symbol, built from lexical scope: `ange::EcsWorld::run`, `alpha::run`, `Tickable.run`. Modelled for Rust, C/C++ and TypeScript; empty means *unresolved*, never *top-level*.
 - `--scope <glob>` filter on `cx symbols` and `cx definition`, matched against the qualified name. It never matches a symbol whose scope is unresolved.
 - Ambiguity warnings now count *distinct symbols* and list their qualified names, so a C++ prototype plus its definition (one symbol, two locations) no longer looks like a conflict.
@@ -24,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixture corpus (`tests/fixtures/agent_corpus`) and `scripts/bench.sh` for reproducible correctness and performance baselines.
 
 ### Changed
-- `INDEX_VERSION` 10 → 11; existing indexes rebuild automatically on first use. Index entries now store lexical scope, file size, and a content hash (all recorded from data already available during parsing, so indexing cost is unchanged).
+- `INDEX_VERSION` 11 → 12; existing indexes rebuild automatically on first use. Index entries now store lexical scope, import targets, file size, and a content hash (all recorded from data already available during parsing, so indexing cost is unchanged).
 - TOON and JSON symbol rows include a `qualified` column; `cx definition` plain-text output adds a `qualified:` line when the scope is resolved.
 - Ordinary queries now compare file size in addition to mtime, catching same-mtime edits that change length.
 - **Breaking (`--json` only):** JSON output is always an envelope object. Previously the root was a bare array unless results were truncated or offset. Read `results` for rows and `page` for `{total, offset, limit, truncated}`.

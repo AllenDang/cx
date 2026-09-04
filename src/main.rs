@@ -1,5 +1,6 @@
 mod index;
 mod lang;
+mod map;
 mod output;
 mod query;
 mod language;
@@ -114,6 +115,24 @@ enum Commands {
         /// Show exact reference lines with source context
         #[arg(long)]
         context: bool,
+    },
+    /// Bounded repository map: subsystems, sizes, and resolved import edges
+    Map {
+        /// Directory depth used to group files into subsystems (default 1)
+        #[arg(long, default_value = "1")]
+        depth: usize,
+        /// Include vendored/third-party paths (excluded by default)
+        #[arg(long)]
+        include_vendor: bool,
+        /// Include generated/build output paths (excluded by default)
+        #[arg(long)]
+        include_generated: bool,
+        /// Include test paths (excluded by default)
+        #[arg(long)]
+        tests: bool,
+        /// Exclude paths matching a glob (repeatable)
+        #[arg(long, value_name = "GLOB")]
+        exclude: Vec<String>,
     },
     /// Re-index the named paths immediately, by content hash
     Refresh {
@@ -249,6 +268,24 @@ fn main() {
             let root = resolve_root(&cli.root, file.as_deref());
             let idx = index::Index::load_or_build(&root, &freshness);
             query::references(&idx, name, file.as_deref(), context, cli.json, &resolve_pagination(Some(50)))
+        }
+        Commands::Map {
+            depth,
+            include_vendor,
+            include_generated,
+            tests,
+            ref exclude,
+        } => {
+            let root = resolve_root(&cli.root, None);
+            let idx = index::Index::load_or_build(&root, &freshness);
+            let opts = map::MapOptions {
+                depth,
+                include_vendor,
+                include_generated,
+                include_tests: tests,
+                exclude_globs: exclude,
+            };
+            query::map_report(&idx, &opts, cli.json, &resolve_pagination(Some(40)))
         }
         Commands::Refresh { ref paths } => {
             // Deliberately not derived from the path arguments: refresh operates
