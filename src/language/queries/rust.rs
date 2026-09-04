@@ -22,6 +22,15 @@ pub const QUERY: &str = r"
 (function_item
     name: (identifier) @name) @definition.function
 
+; Signature-only items: trait method requirements and `extern` block
+; declarations have no body, so they are declarations, not definitions.
+
+(function_signature_item
+    name: (identifier) @name) @declaration.function
+
+(associated_type
+    name: (type_identifier) @name) @declaration.type
+
 ; --- Traits ---
 
 (trait_item

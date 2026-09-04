@@ -49,9 +49,9 @@ fn overview_main_rs() {
     let out = cx().args(["overview", "src/main.rs"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("{name,kind,range,signature}:"), "should have TOON header: {stdout}");
-    assert!(stdout.contains("main,fn,"));
-    assert!(stdout.contains("resolve_root,fn,"));
+    assert!(stdout.contains("{name,kind,role,range,signature}:"), "should have TOON header: {stdout}");
+    assert!(stdout.contains("main,fn,definition,"));
+    assert!(stdout.contains("resolve_root,fn,definition,"));
 }
 
 #[test]
@@ -68,9 +68,9 @@ fn overview_includes_line_ranges() {
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("{name,kind,range,signature}:"), "{stdout}");
-    assert!(stdout.contains("alpha,fn,\"1-3\","), "{stdout}");
-    assert!(stdout.contains("beta,fn,\"5\","), "{stdout}");
+    assert!(stdout.contains("{name,kind,role,range,signature}:"), "{stdout}");
+    assert!(stdout.contains("alpha,fn,definition,\"1-3\","), "{stdout}");
+    assert!(stdout.contains("beta,fn,definition,\"5\","), "{stdout}");
 }
 
 #[test]
@@ -238,9 +238,9 @@ fn markdown_overview_shows_headings() {
     let out = cx_in(dir.path()).args(["overview", "README.md"]).output().unwrap();
     assert!(out.status.success(), "overview README.md should succeed: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("{name,kind,range,signature}:"), "{stdout}");
-    assert!(stdout.contains("Hello,heading"), "{stdout}");
-    assert!(stdout.contains("Usage,heading"), "{stdout}");
+    assert!(stdout.contains("{name,kind,role,range,signature}:"), "{stdout}");
+    assert!(stdout.contains("Hello,heading,heading"), "{stdout}");
+    assert!(stdout.contains("Usage,heading,heading"), "{stdout}");
 }
 
 #[test]

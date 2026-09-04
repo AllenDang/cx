@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::language::{LangError, detect_language, download_names_for, parse_and_extract, primary_extension};
 
-pub const INDEX_VERSION: u32 = 8;
+pub const INDEX_VERSION: u32 = 9;
 
 /// Compute the cache path for a given project root.
 /// Returns `~/.cache/cx/indexes/<hash>.db` where hash is derived from the
@@ -82,11 +82,50 @@ impl FileEntry {
 pub struct Symbol {
     pub name: String,
     pub kind: SymbolKind,
+    /// Whether this location defines the symbol or only declares it.
+    /// Independent of `kind` (roadmap §5.1): a C++ function prototype and its
+    /// definition share `kind = Fn` but differ in role.
+    #[serde(default)]
+    pub role: SymbolRole,
     pub signature: String,
     pub byte_range: (usize, usize),
     /// Whether this symbol is a test (e.g. `#[test]` in Rust, `test` block in Zig).
     #[serde(default)]
     pub is_test: bool,
+}
+
+/// What a symbol location *is*, as opposed to what kind of thing it names.
+///
+/// Only ever set from an explicit grammar capture — never guessed from the
+/// presence of `{}` (roadmap §5.1).  A language whose query cannot tell the
+/// forms apart yields [`SymbolRole::Unknown`] rather than a hopeful
+/// `Definition`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+#[clap(rename_all = "lowercase")]
+pub enum SymbolRole {
+    /// The implementation: a body, a type with members, a namespace block.
+    #[default]
+    Definition,
+    /// A signature-only site: C/C++ prototype, in-class method declaration,
+    /// forward type declaration, Rust trait method signature, TypeScript
+    /// interface/abstract member, `declare` ambient statement.
+    Declaration,
+    /// A document section (Markdown heading) — neither of the above.
+    Heading,
+    /// The grammar cannot reliably distinguish the forms for this construct.
+    Unknown,
+}
+
+impl SymbolRole {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Definition => "definition",
+            Self::Declaration => "declaration",
+            Self::Heading => "heading",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -644,6 +683,7 @@ mod tests {
             Symbol {
                 name: "foo".to_string(),
                 kind: SymbolKind::Fn,
+                role: SymbolRole::Definition,
                 signature: "pub fn foo(x: i32) -> bool".to_string(),
                 byte_range: (100, 500),
                 is_test: false,
@@ -651,6 +691,7 @@ mod tests {
             Symbol {
                 name: "Bar".to_string(),
                 kind: SymbolKind::Struct,
+                role: SymbolRole::Definition,
                 signature: "pub struct Bar".to_string(),
                 byte_range: (600, 800),
                 is_test: false,
@@ -658,6 +699,7 @@ mod tests {
             Symbol {
                 name: "test_bar".to_string(),
                 kind: SymbolKind::Fn,
+                role: SymbolRole::Declaration,
                 signature: "fn test_bar()".to_string(),
                 byte_range: (900, 1000),
                 is_test: true,
@@ -672,6 +714,16 @@ mod tests {
         assert_eq!(decoded[0].byte_range, (100, 500));
         assert_eq!(decoded[2].name, "test_bar");
         assert!(decoded[2].is_test);
+        assert_eq!(decoded[0].role, SymbolRole::Definition);
+        assert_eq!(decoded[2].role, SymbolRole::Declaration);
+    }
+
+    #[test]
+    fn test_symbol_role_defaults_to_definition_for_legacy_rows() {
+        // Rows written before the role field existed decode with the serde
+        // default instead of failing, so a stale-but-compatible payload stays
+        // readable; INDEX_VERSION still forces a rebuild for real migrations.
+        assert_eq!(SymbolRole::default(), SymbolRole::Definition);
     }
 
     #[test]
@@ -917,6 +969,64 @@ mod tests {
         // Reload — should detect version mismatch and rebuild
         let idx2 = Index::load_or_build(dir.path());
         assert!(idx2.entries.contains_key(&PathBuf::from("src/a.rs")));
+    }
+
+    #[test]
+    fn test_pre_role_index_version_is_rebuilt_with_roles() {
+        // Phase 2 bumped INDEX_VERSION 8 → 9 to add SymbolRole.  An index left
+        // behind by an older cx must be rebuilt, not decoded with defaults, so
+        // C++ prototypes come back labelled as declarations.
+        init_grammar_cache();
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("src/a.cpp"),
+            "void go(int v);\nvoid go(int v) { (void)v; }\n",
+        )
+        .unwrap();
+
+        let idx = Index::load_or_build(dir.path());
+        assert_eq!(idx.entries.len(), 1);
+        drop(idx);
+
+        // Stamp the previous schema version onto the existing index.
+        let db = Database::create(cache_path_for(dir.path())).unwrap();
+        {
+            let write_txn = db.begin_write().unwrap();
+            {
+                let mut table = write_txn.open_table(META_TABLE).unwrap();
+                let _ = table.insert("version", 8u32.to_le_bytes().as_slice());
+            }
+            write_txn.commit().unwrap();
+        }
+        drop(db);
+
+        let rebuilt = Index::load_or_build(dir.path());
+        let symbols = &rebuilt
+            .entries
+            .get(&PathBuf::from("src/a.cpp"))
+            .expect("file must be reindexed")
+            .symbols;
+        let roles: Vec<SymbolRole> = symbols.iter().map(|s| s.role).collect();
+        assert_eq!(
+            roles,
+            vec![SymbolRole::Declaration, SymbolRole::Definition],
+            "{symbols:#?}"
+        );
+
+        // And the rebuilt index is written back at the current version.
+        drop(rebuilt);
+        let reopened = Index::load_or_build(dir.path());
+        assert_eq!(
+            reopened
+                .entries
+                .get(&PathBuf::from("src/a.cpp"))
+                .unwrap()
+                .symbols[0]
+                .role,
+            SymbolRole::Declaration
+        );
     }
 
     #[test]

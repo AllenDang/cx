@@ -102,16 +102,16 @@ $ cx overview src/
   main.rs,"Cli, Commands, main, resolve_root, ..."
 ```
 
-Single file -- full symbol table with kinds, line ranges, and signatures:
+Single file -- full symbol table with kinds, roles, line ranges, and signatures:
 
 ```
 $ cx overview src/main.rs
 
-[9]{name,kind,range,signature}:
-  Cli,struct,"16-43",struct Cli
-  Commands,enum,"46-113",enum Commands
-  main,fn,"154-248",fn main()
-  resolve_root,fn,"143-152","fn resolve_root(project: Option<PathBuf>) -> PathBuf"
+[12]{name,kind,role,range,signature}:
+  Cli,struct,definition,"16-43",struct Cli
+  Commands,enum,definition,"46-119",enum Commands
+  main,fn,definition,"160-260",fn main()
+  resolve_root,fn,definition,"149-158","fn resolve_root(explicit: &Option<PathBuf>, path_hint: Option<&Path>) -> PathBuf"
   ...
 ```
 
@@ -122,25 +122,52 @@ Markdown files are indexed by headings. A Markdown definition returns the full s
 ```
 $ cx overview README.md
 
-[3]{name,kind,range,signature}:
-  cx,heading,"1-278",# cx
-  Install,heading,"7-30",## Install
-  Usage,heading,"77-199",## Usage
+[3]{name,kind,role,range,signature}:
+  cx,heading,heading,"1-278",# cx
+  Install,heading,heading,"7-30",## Install
+  Usage,heading,heading,"77-199",## Usage
 ```
+
+### Declaration vs definition
+
+Every symbol carries a `role` that is independent of its `kind`:
+
+| Role | Meaning |
+| --- | --- |
+| `definition` | the implementation: a body, a type with members, a namespace block |
+| `declaration` | signature only: C/C++ prototype or in-class member, forward type declaration, Rust trait requirement or `extern` item, TypeScript interface/abstract/ambient member |
+| `heading` | a Markdown document section |
+| `unknown` | the grammar cannot tell the forms apart for this construct |
+
+Roles come from explicit grammar captures, never from guessing whether a `{` follows. So a C++ header prototype and its implementation are distinguishable without string-matching a trailing `;`:
+
+```
+$ cx symbols --file include/ange/ecs.hpp
+
+[6]{name,kind,role,signature}:
+  EcsWorld,class,definition,class EcsWorld
+  EcsWorld,fn,declaration,EcsWorld();
+  ange,module,definition,namespace ange
+  entity_count,fn,declaration,int entity_count() const;
+  run,fn,declaration,void run();
+  validate_param,fn,declaration,"void validate_param(const std::string& name, int value);"
+```
+
+`cx definition` sorts implementations ahead of signature-only sites, so the first result is the body. Use `--role declaration` when you specifically want the prototype, or `--role definition` to exclude prototypes entirely.
 
 ### Symbols -- search across the project
 
 ```
 $ cx symbols --kind fn
 
-[15]{file,name,kind,signature}:
-  src/output.rs,print_toon,fn,"pub fn print_toon<T: Serialize>(value: &T)"
-  src/query.rs,symbols,fn,"pub fn symbols(...) -> i32"
-  src/query.rs,definition,fn,"pub fn definition(...) -> i32"
+[15]{file,name,kind,role,signature}:
+  src/output.rs,print_toon,fn,definition,"pub fn print_toon<T: Serialize>(value: &T)"
+  src/query.rs,symbols,fn,definition,"pub fn symbols(...) -> i32"
+  src/query.rs,definition,fn,definition,"pub fn definition(...) -> i32"
   ...
 ```
 
-Filters: `--kind`, `--name` (glob), `--file`
+Filters: `--kind`, `--role`, `--name` (glob), `--file`
 
 Public/exported symbols are identifiable from their signatures (e.g. `pub fn` in Rust, `export function` in TypeScript).
 
@@ -150,20 +177,22 @@ Public/exported symbols are identifiable from their signatures (e.g. `pub fn` in
 $ cx definition --name resolve_root
 
 file: src/main.rs
-line: 76
+line: 149
+role: definition
 ---
-fn resolve_root(project: Option<PathBuf>) -> PathBuf {
-    match project {
-        Some(p) => p,
-        None => {
-            let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            util::git::find_project_root(&cwd)
-        }
+fn resolve_root(explicit: &Option<PathBuf>, path_hint: Option<&Path>) -> PathBuf {
+    if let Some(p) = explicit {
+        return util::path::canonical(p);
     }
+    if let Some(hint) = path_hint {
+        return util::path::canonical(&util::git::find_project_root(&util::path::canonical(hint)));
+    }
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    util::path::canonical(&util::git::find_project_root(&util::path::canonical(&cwd)))
 }
 ```
 
-Use `--from src/foo.rs` to disambiguate when multiple files define the same name. `--kind fn` filters by symbol kind. `--max-lines` (default 200) truncates large bodies.
+Use `--from src/foo.rs` to disambiguate when multiple files define the same name. `--kind fn` filters by symbol kind and `--role definition` skips signature-only sites. `--max-lines` (default 200) truncates large bodies.
 
 ### References -- find all usages of a symbol
 

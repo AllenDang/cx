@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use memchr::memmem;
 use serde::Serialize;
 
-use crate::index::{FileData, Index, Symbol, SymbolKind};
+use crate::index::{FileData, Index, Symbol, SymbolKind, SymbolRole};
 use crate::language::{self, detect_language};
 use crate::output::{print_toon, print_json};
 use crate::util::glob::glob_match;
@@ -89,6 +89,7 @@ struct SymbolRowOut {
     file: Option<String>,
     name: String,
     kind: String,
+    role: String,
     signature: String,
 }
 
@@ -98,6 +99,7 @@ struct SymbolRowWithRangeOut {
     file: Option<String>,
     name: String,
     kind: String,
+    role: String,
     range: String,
     signature: String,
 }
@@ -106,6 +108,7 @@ struct SymbolRowWithRangeOut {
 struct DefinitionResult {
     file: String,
     line: usize,
+    role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     truncated: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -120,17 +123,31 @@ struct SymbolRow<'a> {
     symbol: &'a Symbol,
 }
 
-/// Execute the symbols query with optional file, name glob, and kind filters.
+/// Symbol selection filters shared by `symbols` and `definition`.
+///
+/// Grouped rather than passed positionally so adding a dimension (role in
+/// Phase 2, qualified scope in Phase 5) does not grow every call site.
+#[derive(Default)]
+pub struct Filters<'a> {
+    /// Restrict to one file, or to a directory subtree.
+    pub file: Option<&'a Path>,
+    /// Glob matched against the symbol name.
+    pub name_glob: Option<&'a str>,
+    pub kind: Option<SymbolKind>,
+    pub role: Option<SymbolRole>,
+}
+
+/// Execute the symbols query with optional file, name glob, kind and role filters.
 /// When scoped to a single file, omits the file column from output.
 pub fn symbols(
     index: &Index,
-    file: Option<&Path>,
-    name_glob: Option<&str>,
-    kind_filter: Option<SymbolKind>,
+    filters: &Filters<'_>,
     ranges: bool,
     json: bool,
     pg: &Pagination,
 ) -> i32 {
+    let (file, name_glob, kind_filter, role_filter) =
+        (filters.file, filters.name_glob, filters.kind, filters.role);
     let mut rows: Vec<SymbolRow<'_>> = Vec::new();
 
     let rel_path = file.map(|f| make_relative(f, &index.root));
@@ -153,6 +170,11 @@ pub fn symbols(
 
             if let Some(kind) = kind_filter
                 && sym.kind != kind {
+                    continue;
+                }
+
+            if let Some(role) = role_filter
+                && sym.role != role {
                     continue;
                 }
 
@@ -179,6 +201,7 @@ pub fn symbols(
                 file: if single_file { None } else { Some(display_path(r.file)) },
                 name: r.symbol.name.clone(),
                 kind: r.symbol.kind.as_str().to_string(),
+                role: r.symbol.role.as_str().to_string(),
                 range: line_range(index, &mut line_cache, r.file, r.symbol.byte_range)
                     .unwrap_or_default(),
                 signature: r.symbol.signature.clone(),
@@ -204,6 +227,7 @@ pub fn symbols(
                 file: if single_file { None } else { Some(display_path(r.file)) },
                 name: r.symbol.name.clone(),
                 kind: r.symbol.kind.as_str().to_string(),
+                role: r.symbol.role.as_str().to_string(),
                 signature: r.symbol.signature.clone(),
             })
             .collect();
@@ -276,15 +300,18 @@ pub fn kind_counts(
 }
 
 /// Execute the definition query: find symbol by exact name, return its body.
+///
+/// `filters.file` acts as the `--from` disambiguator; `filters.name_glob` is
+/// unused here because definition matches an exact name.
 pub fn definition(
     index: &Index,
     name: &str,
-    from: Option<&Path>,
-    kind_filter: Option<SymbolKind>,
+    filters: &Filters<'_>,
     max_lines: usize,
     json: bool,
     pg: &Pagination,
 ) -> i32 {
+    let (from, kind_filter, role_filter) = (filters.file, filters.kind, filters.role);
     let from_rel = from.map(|f| make_relative(f, &index.root));
 
     let mut matches: Vec<(&PathBuf, &Symbol)> = Vec::new();
@@ -293,6 +320,10 @@ pub fn definition(
             if sym.name == name {
                 if let Some(kind) = kind_filter
                     && sym.kind != kind {
+                        continue;
+                    }
+                if let Some(role) = role_filter
+                    && sym.role != role {
                         continue;
                     }
                 matches.push((path, sym));
@@ -319,9 +350,12 @@ pub fn definition(
         return 0;
     }
 
-    // Sort by symbol priority (types first) then by file path
+    // Sort implementations ahead of signature-only sites, then by symbol
+    // priority (types first), then by file path.  An agent asking for a
+    // definition wants the body, not the prototype (roadmap §5.1).
     matches.sort_by(|a, b| {
-        symbol_priority(a.1.kind).cmp(&symbol_priority(b.1.kind))
+        role_priority(a.1.role).cmp(&role_priority(b.1.role))
+            .then(symbol_priority(a.1.kind).cmp(&symbol_priority(b.1.kind)))
             .then(a.0.cmp(b.0))
     });
 
@@ -348,6 +382,7 @@ pub fn definition(
             DefinitionResult {
                 file: display_path(path),
                 line: start_line,
+                role: sym.role.as_str().to_string(),
                 truncated: if truncated { Some(true) } else { None },
                 lines: if truncated { Some(line_count) } else { None },
                 body: display_body,
@@ -372,7 +407,7 @@ pub fn definition(
             if i > 0 {
                 println!();
             }
-            print!("file: {}\nline: {}", r.file, r.line);
+            print!("file: {}\nline: {}\nrole: {}", r.file, r.line, r.role);
             if let Some(total) = r.lines {
                 print!("\ntruncated: {total} lines total");
             }
@@ -561,6 +596,17 @@ struct DirOverviewFullRow {
     kind: String,
     range: String,
     signature: String,
+}
+
+/// Priority for symbol roles: implementations before signature-only sites.
+/// Unknown sits last so an unlabelled construct never outranks a proven body.
+const fn role_priority(role: SymbolRole) -> u8 {
+    match role {
+        SymbolRole::Definition => 0,
+        SymbolRole::Heading => 1,
+        SymbolRole::Declaration => 2,
+        SymbolRole::Unknown => 3,
+    }
 }
 
 /// Priority for symbol kinds in directory overview: lower = shown first.

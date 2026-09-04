@@ -67,14 +67,13 @@ fn test_paths_are_classified_by_convention() {
     );
 }
 
-// --- §4.2 declaration vs definition ----------------------------------------
+// --- §4.2 declaration vs definition (Phase 2) ---------------------------------
 
-/// KNOWN GAP (roadmap §4.2, flipped by Phase 2): a C++ forward declaration and
-/// its definition are both indexed as plain definitions.  Nothing in the
-/// machine-readable output distinguishes them except a trailing `;` in the
-/// signature, which is not a contract.
+/// Phase 2 (roadmap §4.2, §5.1): a C++ forward declaration and its definition
+/// are now machine-distinguishable by `role`, and the implementation sorts
+/// first — an agent asking for a definition gets the body, not the prototype.
 #[test]
-fn cpp_declaration_and_definition_are_currently_indistinguishable() {
+fn cpp_declaration_and_definition_are_machine_distinguishable() {
     let p = fixture_project(CORPUS);
     let out = run_cx(
         p.path(),
@@ -90,15 +89,111 @@ fn cpp_declaration_and_definition_are_currently_indistinguishable() {
         out.stdout
     );
 
-    let files: Vec<&str> = rows.iter().map(|r| r["file"].as_str().unwrap()).collect();
-    assert_eq!(files, vec!["include/ange/ecs.hpp", "src/ecs.cpp"]);
-
-    // No role field exists yet — Phase 2 must add one.
-    assert!(
-        rows.iter().all(|r| r.get("role").is_none()),
-        "unexpected role field already present: {}",
+    let seen: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|r| {
+            (
+                r["file"].as_str().unwrap(),
+                r["role"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("src/ecs.cpp", "definition"),
+            ("include/ange/ecs.hpp", "declaration"),
+        ],
+        "implementation must sort ahead of the prototype\n{}",
         out.stdout
     );
+}
+
+#[test]
+fn role_filter_selects_declarations_only() {
+    let p = fixture_project(CORPUS);
+    let out = run_cx(p.path(), &["--json", "symbols", "--role", "declaration", "--all"]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let rows = out.json();
+    let rows = rows.as_array().unwrap();
+
+    // 4 signature-only sites in the C++ header (free function, in-class run,
+    // entity_count, constructor), the class-scope `run` declaration in
+    // scope_b.cpp, and 1 TypeScript interface member.
+    let seen: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|r| (r["file"].as_str().unwrap(), r["name"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("include/ange/ecs.hpp", "EcsWorld"),
+            ("include/ange/ecs.hpp", "entity_count"),
+            ("include/ange/ecs.hpp", "run"),
+            ("include/ange/ecs.hpp", "validate_param"),
+            ("src/app.ts", "run"),
+            ("src/scope_b.cpp", "run"),
+        ],
+        "{}",
+        out.stdout
+    );
+    assert!(
+        rows.iter().all(|r| r["role"].as_str().unwrap() == "declaration"),
+        "{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn role_filter_selects_the_implementation_of_a_shared_name() {
+    let p = fixture_project(CORPUS);
+    let out = run_cx(
+        p.path(),
+        &[
+            "--json",
+            "definition",
+            "--name",
+            "validate_param",
+            "--role",
+            "definition",
+            "--all",
+        ],
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let rows = out.json();
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{}", out.stdout);
+    assert_eq!(rows[0]["file"].as_str().unwrap(), "src/ecs.cpp");
+    assert!(rows[0]["body"].as_str().unwrap().contains("runtime_error"), "{}", out.stdout);
+}
+
+#[test]
+fn every_symbol_carries_a_role() {
+    let p = fixture_project(CORPUS);
+    let out = run_cx(p.path(), &["--json", "symbols", "--all"]);
+    let rows = out.json();
+    let rows = rows.as_array().unwrap();
+
+    let mut counts = std::collections::BTreeMap::new();
+    for row in rows {
+        let role = row["role"].as_str().expect("every row has a role");
+        *counts.entry(role.to_string()).or_insert(0usize) += 1;
+    }
+    assert_eq!(counts.get("definition"), Some(&31), "{counts:?}");
+    assert_eq!(counts.get("declaration"), Some(&6), "{counts:?}");
+    assert_eq!(counts.get("heading"), Some(&4), "{counts:?}");
+    assert_eq!(counts.get("unknown"), None, "{counts:?}");
+}
+
+#[test]
+fn markdown_headings_use_the_heading_role() {
+    let p = fixture_project(CORPUS);
+    let out = run_cx(p.path(), &["--json", "symbols", "--file", "docs/design.md", "--all"]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let rows = out.json();
+    for row in rows.as_array().unwrap() {
+        assert_eq!(row["role"].as_str().unwrap(), "heading", "{}", out.stdout);
+    }
 }
 
 // --- §4.3 same name in different scopes ------------------------------------

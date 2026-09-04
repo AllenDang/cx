@@ -45,42 +45,52 @@ pub const QUERY: &str = r"
       declarator: (qualified_identifier
         name: (identifier) @name)))) @definition.method
 
-; --- Function declarations / prototypes ---
+; --- Function declarations / prototypes (signature only, no body) ---
 
 (declaration
   declarator: (function_declarator
-    declarator: (identifier) @name)) @definition.function
+    declarator: (identifier) @name)) @declaration.function
 
 (declaration
   declarator: (pointer_declarator
     declarator: (function_declarator
-      declarator: (identifier) @name))) @definition.function
+      declarator: (identifier) @name))) @declaration.function
 
 (declaration
   declarator: (function_declarator
-    declarator: (field_identifier) @name)) @definition.method
+    declarator: (field_identifier) @name)) @declaration.method
 
 (declaration
   declarator: (function_declarator
     declarator: (qualified_identifier
-      name: (identifier) @name))) @definition.method
+      name: (identifier) @name))) @declaration.method
 
 (field_declaration
   declarator: (function_declarator
-    declarator: (field_identifier) @name)) @definition.method
+    declarator: (field_identifier) @name)) @declaration.method
 
 ; --- Classes & structs ---
+; A bodyless `class Foo;` / `struct Foo;` is a forward declaration.  The
+; body-bearing patterns come later so they win the same-byte-range dedup.
+
+(class_specifier
+  name: (type_identifier) @name) @declaration.class
+
+(struct_specifier
+  name: (type_identifier) @name) @declaration.class
 
 (struct_specifier
   name: (type_identifier) @name
   body: (_)) @definition.class
 
 (class_specifier
-  name: (type_identifier) @name) @definition.class
+  name: (type_identifier) @name
+  body: (_)) @definition.class
 
 (template_declaration
   (class_specifier
-    name: (type_identifier) @name)) @definition.class
+    name: (type_identifier) @name
+    body: (_))) @definition.class
 
 (template_declaration
   (struct_specifier

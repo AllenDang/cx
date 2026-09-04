@@ -11,6 +11,14 @@ pub const QUERY: &str = r"
       declarator: (identifier) @name))) @definition.function
 
 ; --- Structs & unions ---
+; Bodyless `struct Foo;` is a forward declaration; the body-bearing patterns
+; follow so they win the same-byte-range dedup.
+
+(struct_specifier
+  name: (type_identifier) @name) @declaration.class
+
+(union_specifier
+  name: (type_identifier) @name) @declaration.class
 
 (struct_specifier
   name: (type_identifier) @name
@@ -30,14 +38,14 @@ pub const QUERY: &str = r"
 (type_definition
   declarator: (type_identifier) @name) @definition.type
 
-; --- Function prototypes ---
+; --- Function prototypes (signature only, no body) ---
 
 (declaration
   declarator: (function_declarator
-    declarator: (identifier) @name)) @definition.function
+    declarator: (identifier) @name)) @declaration.function
 
 (declaration
   declarator: (pointer_declarator
     declarator: (function_declarator
-      declarator: (identifier) @name))) @definition.function
+      declarator: (identifier) @name))) @declaration.function
 ";

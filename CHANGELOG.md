@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `role` on every symbol, distinguishing `definition` from `declaration` (plus `heading` and `unknown`). C/C++ prototypes and forward type declarations, Rust trait requirements and `extern` items, and TypeScript interface/abstract/ambient members are now machine-distinguishable from implementations. Roles come from grammar captures, never from guessing at braces.
+- `--role` filter on `cx symbols` and `cx definition`.
+- `cx definition` sorts implementations ahead of signature-only sites, so the first result is the body.
+- Fixture corpus (`tests/fixtures/agent_corpus`) and `scripts/bench.sh` for reproducible correctness and performance baselines.
+
+### Changed
+- One canonical path identity for the project root, index cache key, and every path argument: symlinked spellings such as `/tmp/p` and `/private/tmp/p` now share an index and accept arguments in either form. Case-only aliases remain separate (see KNOWN_ISSUES.md).
+- `INDEX_VERSION` 8 → 9; existing indexes rebuild automatically on first use.
+- TOON and JSON symbol rows include a `role` column; `cx definition` plain-text output includes a `role:` line.
+
+### Fixed
+- `cx --root /tmp/p overview /private/tmp/p/src/a.rs` no longer fails with "file not in index".
+
 ## [0.7.2] - 2026-07-23
 
 ### Fixed

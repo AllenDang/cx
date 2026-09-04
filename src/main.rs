@@ -65,6 +65,9 @@ enum Commands {
         /// Filter by symbol kind
         #[arg(long)]
         kind: Option<index::SymbolKind>,
+        /// Filter by symbol role (definition, declaration, heading, unknown)
+        #[arg(long)]
+        role: Option<index::SymbolRole>,
         /// List distinct symbol kinds with counts
         #[arg(long)]
         kinds: bool,
@@ -81,6 +84,9 @@ enum Commands {
         /// Filter by symbol kind
         #[arg(long)]
         kind: Option<index::SymbolKind>,
+        /// Filter by symbol role (e.g. --role declaration for a C++ prototype)
+        #[arg(long)]
+        role: Option<index::SymbolRole>,
         /// Max lines for body output (default 200)
         #[arg(long, default_value = "200")]
         max_lines: usize,
@@ -186,23 +192,36 @@ fn main() {
             if abs.is_dir() {
                 query::dir_overview(&idx, path, full, cli.no_tests, cli.json, &resolve_pagination(None))
             } else {
-                query::symbols(&idx, Some(path), None, None, true, cli.json, &resolve_pagination(None))
+                let filters = query::Filters { file: Some(path), ..Default::default() };
+                query::symbols(&idx, &filters, true, cli.json, &resolve_pagination(None))
             }
         }
-        Commands::Symbols { ref file, ref name, kind, kinds } => {
+        Commands::Symbols { ref file, ref name, kind, role, kinds } => {
             let root = resolve_root(&cli.root, file.as_deref());
             let idx = index::Index::load_or_build(&root);
             if kinds {
                 query::kind_counts(&idx, file.as_deref(), cli.json)
             } else {
-                query::symbols(&idx, file.as_deref(), name.as_deref(), kind, false, cli.json, &resolve_pagination(Some(100)))
+                let filters = query::Filters {
+                    file: file.as_deref(),
+                    name_glob: name.as_deref(),
+                    kind,
+                    role,
+                };
+                query::symbols(&idx, &filters, false, cli.json, &resolve_pagination(Some(100)))
             }
         }
-        Commands::Definition { ref name, ref from, kind, max_lines } => {
+        Commands::Definition { ref name, ref from, kind, role, max_lines } => {
             let root = resolve_root(&cli.root, from.as_deref());
             let idx = index::Index::load_or_build(&root);
             let default = if from.is_some() { None } else { Some(3) };
-            query::definition(&idx, name, from.as_deref(), kind, max_lines, cli.json, &resolve_pagination(default))
+            let filters = query::Filters {
+                file: from.as_deref(),
+                kind,
+                role,
+                ..Default::default()
+            };
+            query::definition(&idx, name, &filters, max_lines, cli.json, &resolve_pagination(default))
         }
         Commands::References { ref name, ref file, context } => {
             let root = resolve_root(&cli.root, file.as_deref());

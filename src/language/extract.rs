@@ -1,4 +1,4 @@
-use crate::index::{Symbol, SymbolKind};
+use crate::index::{Symbol, SymbolKind, SymbolRole};
 use std::collections::HashMap;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator};
 
@@ -72,6 +72,25 @@ fn is_test_attribute(text: &str) -> bool {
     false
 }
 
+/// Split a capture name into its role and its kind-resolution key.
+///
+/// `@definition.function` → (Definition, "definition.function")
+/// `@declaration.function` → (Declaration, "definition.function")
+/// `@unknown.function` → (Unknown, "definition.function")
+///
+/// Kind lookup is always normalized to the `definition.` key so a language's
+/// `kind_overrides` table covers every role without duplicated entries.
+fn split_capture(capture_name: &str) -> Option<(SymbolRole, String)> {
+    let (prefix, suffix) = capture_name.split_once('.')?;
+    let role = match prefix {
+        "definition" => SymbolRole::Definition,
+        "declaration" => SymbolRole::Declaration,
+        "unknown" => SymbolRole::Unknown,
+        _ => return None,
+    };
+    Some((role, format!("definition.{suffix}")))
+}
+
 // --- Generic extractor ---
 
 pub(super) fn extract_symbols(
@@ -89,19 +108,19 @@ pub(super) fn extract_symbols(
     while let Some(m) = matches.next() {
         let mut name_node: Option<Node> = None;
         let mut def_node: Option<Node> = None;
-        let mut def_kind: Option<&str> = None;
+        let mut def_capture: Option<(SymbolRole, String)> = None;
 
         for capture in m.captures {
             let cname = capture_names[capture.index as usize];
             if cname == "name" {
                 name_node = Some(capture.node);
-            } else if cname.starts_with("definition.") {
+            } else if let Some(split) = split_capture(cname) {
                 def_node = Some(capture.node);
-                def_kind = Some(cname);
+                def_capture = Some(split);
             }
         }
 
-        let (Some(name_n), Some(def_n), Some(kind_str)) = (name_node, def_node, def_kind)
+        let (Some(name_n), Some(def_n), Some((role, kind_key))) = (name_node, def_node, def_capture)
         else {
             continue;
         };
@@ -118,7 +137,7 @@ pub(super) fn extract_symbols(
             Err(_) => continue,
         };
 
-        let kind = match resolve_kind(config, kind_str, &def_n) {
+        let kind = match resolve_kind(config, &kind_key, &def_n) {
             Some(k) => k,
             None => continue,
         };
@@ -141,6 +160,7 @@ pub(super) fn extract_symbols(
         symbols.push(Symbol {
             name,
             kind,
+            role,
             signature,
             byte_range,
             is_test,

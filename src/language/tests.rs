@@ -1,5 +1,5 @@
 use super::*;
-use crate::index::{Symbol, SymbolKind};
+use crate::index::{Symbol, SymbolKind, SymbolRole};
 use std::path::PathBuf;
 use std::sync::Once;
 
@@ -1434,4 +1434,162 @@ fn bash_top_level_var() {
         !syms.iter().any(|s| s.name == "x"),
         "local vars should not be captured"
     );
+}
+
+// --- SymbolRole tests (roadmap §5.1) ---
+//
+// Roles come only from explicit grammar captures, never from guessing at `{}`.
+// Each case below pins a construct whose role a wrong implementation would flip.
+
+#[test]
+fn cpp_prototype_is_declaration_and_body_is_definition() {
+    let src = "void validate(int v);\nvoid validate(int v) { (void)v; }\n";
+    let syms = extract("cpp", src, "a.cpp");
+    let roles: Vec<(SymbolRole, &str)> = syms
+        .iter()
+        .map(|s| (s.role, s.signature.as_str()))
+        .collect();
+    assert_eq!(
+        roles,
+        vec![
+            (SymbolRole::Declaration, "void validate(int v);"),
+            (SymbolRole::Definition, "void validate(int v)"),
+        ],
+        "{syms:#?}"
+    );
+}
+
+#[test]
+fn cpp_in_class_members_are_declarations_and_out_of_class_bodies_are_definitions() {
+    let src = "class W {\npublic:\n  W();\n  void run();\n};\nW::W() {}\nvoid W::run() {}\n";
+    let syms = extract("cpp", src, "a.cpp");
+
+    let class = syms
+        .iter()
+        .find(|s| s.name == "W" && s.kind == SymbolKind::Class)
+        .unwrap();
+    assert_eq!(class.role, SymbolRole::Definition, "class with a body");
+
+    let run_roles: Vec<SymbolRole> = syms
+        .iter()
+        .filter(|s| s.name == "run")
+        .map(|s| s.role)
+        .collect();
+    assert_eq!(
+        run_roles,
+        vec![SymbolRole::Declaration, SymbolRole::Definition],
+        "{syms:#?}"
+    );
+}
+
+#[test]
+fn cpp_forward_class_declaration_is_not_a_definition() {
+    let src = "class Later;\nclass Now { int x; };\n";
+    let syms = extract("cpp", src, "a.cpp");
+    let later = syms.iter().find(|s| s.name == "Later").unwrap();
+    let now = syms.iter().find(|s| s.name == "Now").unwrap();
+    assert_eq!(later.role, SymbolRole::Declaration, "bodyless class");
+    assert_eq!(now.role, SymbolRole::Definition, "class with members");
+}
+
+#[test]
+fn c_prototype_and_forward_struct_are_declarations() {
+    let src = "struct Opaque;\nstruct Point { int x; };\nint add(int a, int b);\nint add(int a, int b) { return a + b; }\n";
+    let syms = extract("c", src, "a.c");
+
+    let opaque = syms.iter().find(|s| s.name == "Opaque").unwrap();
+    assert_eq!(opaque.role, SymbolRole::Declaration);
+    let point = syms.iter().find(|s| s.name == "Point").unwrap();
+    assert_eq!(point.role, SymbolRole::Definition);
+
+    let add_roles: Vec<SymbolRole> = syms
+        .iter()
+        .filter(|s| s.name == "add")
+        .map(|s| s.role)
+        .collect();
+    assert_eq!(
+        add_roles,
+        vec![SymbolRole::Declaration, SymbolRole::Definition],
+        "{syms:#?}"
+    );
+}
+
+#[test]
+fn rust_trait_signature_is_declaration_and_impl_is_definition() {
+    let src = "trait Tick {\n    fn run(&self) -> u32;\n    fn spin(&self) -> u32 { 0 }\n}\nstruct T;\nimpl Tick for T {\n    fn run(&self) -> u32 { 1 }\n}\n";
+    let syms = extract("rust", src, "a.rs");
+
+    let run_roles: Vec<SymbolRole> = syms
+        .iter()
+        .filter(|s| s.name == "run")
+        .map(|s| s.role)
+        .collect();
+    assert_eq!(
+        run_roles,
+        vec![SymbolRole::Declaration, SymbolRole::Definition],
+        "trait requirement vs impl body: {syms:#?}"
+    );
+
+    // A default method inside the trait has a body — that is a definition.
+    let spin = syms.iter().find(|s| s.name == "spin").unwrap();
+    assert_eq!(spin.role, SymbolRole::Definition);
+}
+
+#[test]
+fn rust_extern_block_signature_is_declaration() {
+    let src = "unsafe extern \"C\" {\n    fn abs(input: i32) -> i32;\n}\n";
+    let syms = extract("rust", src, "a.rs");
+    let abs = syms.iter().find(|s| s.name == "abs").unwrap();
+    assert_eq!(abs.role, SymbolRole::Declaration, "{syms:#?}");
+}
+
+#[test]
+fn ts_interface_member_is_declaration_and_class_method_is_definition() {
+    let src = "interface Tickable {\n  run(): number;\n}\nclass R implements Tickable {\n  run(): number { return 1; }\n}\nabstract class A {\n  abstract run(): number;\n}\n";
+    let syms = extract("typescript", src, "a.ts");
+
+    let run_roles: Vec<SymbolRole> = syms
+        .iter()
+        .filter(|s| s.name == "run")
+        .map(|s| s.role)
+        .collect();
+    assert_eq!(
+        run_roles,
+        vec![
+            SymbolRole::Declaration, // interface member
+            SymbolRole::Definition,  // class method with a body
+            SymbolRole::Declaration, // abstract member
+        ],
+        "{syms:#?}"
+    );
+}
+
+#[test]
+fn ts_ambient_function_signature_is_declaration() {
+    let src = "declare function ambient(x: number): void;\nfunction real(x: number): void {}\n";
+    let syms = extract("typescript", src, "a.ts");
+    let ambient = syms.iter().find(|s| s.name == "ambient").unwrap();
+    let real = syms.iter().find(|s| s.name == "real").unwrap();
+    assert_eq!(ambient.role, SymbolRole::Declaration, "{syms:#?}");
+    assert_eq!(real.role, SymbolRole::Definition);
+}
+
+#[test]
+fn markdown_headings_carry_the_heading_role() {
+    let syms = extract("markdown", "# Title\n\n## Section\n", "README.md");
+    assert!(!syms.is_empty());
+    assert!(
+        syms.iter().all(|s| s.role == SymbolRole::Heading),
+        "{syms:#?}"
+    );
+}
+
+#[test]
+fn languages_without_a_declaration_form_report_definitions() {
+    // Go, Python and Java in this corpus have bodies for every captured symbol,
+    // so every role is a fact, not a guess.
+    let go = extract("go", "func Run() int { return 1 }\n", "a.go");
+    assert_eq!(go[0].role, SymbolRole::Definition);
+    let py = extract("python", "def run():\n    return 1\n", "a.py");
+    assert_eq!(py[0].role, SymbolRole::Definition);
 }

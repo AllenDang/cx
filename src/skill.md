@@ -61,6 +61,7 @@ dispatch, string-keyed lookups, non-symbol regions).
 ```
 cx overview DIR --full                               `--full` also includes kind/range/signature for direct files
 cx symbols [--kind K] [--name GLOB] [--file PATH]    search symbols project-wide
+cx symbols --role declaration                        signature-only sites (C/C++ prototypes, trait/interface members)
 cx symbols --kinds [--file PATH]                     list distinct kinds with counts
 cx definition --name NAME [--from PATH] [--kind K]   get a definition (optionally filtered to specific kind, e.g. function body)
 cx references --name NAME [--file PATH] [--context]  find usages, `--context` will show the line where the use appears
@@ -69,6 +70,8 @@ cx references --name NAME [--file PATH] [--context]  find usages, `--context` wi
 - `--file` and `--from` are identical and restrict the symbol to a precise file, but only if there is an exact match for
   the path resolved from cwd.
 - Kinds: fn, struct, enum, trait, type, const, class, interface, module, event, field, heading
+- Roles: definition (has a body/members), declaration (signature only), heading (Markdown section), unknown (grammar
+  cannot tell the forms apart). Roles come from grammar captures, not from guessing at braces.
 - `.gitignore` is honored. Untracked-but-not-ignored files are still indexed.
 
 ## Key patterns
@@ -76,6 +79,9 @@ cx references --name NAME [--file PATH] [--context]  find usages, `--context` wi
 - Start with `cx overview .`, drill into subdirectories — cheaper than ls + reading files.
 - Can't find a symbol that should exist? Make sure the language grammar is installed via `cx lang list`.
 - `cx definition --name X` gives exact text for Edit tool's `old_string` without reading the whole file.
+- In C/C++ (and Rust traits, TypeScript interfaces) a name can have both a declaration and a definition. `cx definition`
+  lists the implementation first; add `--role definition` to drop prototypes, or `--role declaration` to see only the
+  header signature.
 - `cx references --name X` groups hits by file; add `--context` only when exact source lines are needed.
 - When re-entering an unfamiliar area or picking up a topic after a gap, use `cx overview` / `cx definition` to
   re-orient — don't re-read full files

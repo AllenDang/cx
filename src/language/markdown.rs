@@ -1,4 +1,4 @@
-use crate::index::{Symbol, SymbolKind};
+use crate::index::{Symbol, SymbolKind, SymbolRole};
 
 #[derive(Clone, Copy)]
 struct Heading {
@@ -31,6 +31,7 @@ pub(super) fn extract_headings(source: &[u8]) -> Vec<Symbol> {
             Some(Symbol {
                 name,
                 kind: SymbolKind::Heading,
+                role: SymbolRole::Heading,
                 signature,
                 byte_range: (heading.start, heading.section_end),
                 is_test: false,

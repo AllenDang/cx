@@ -29,6 +29,10 @@ pub const QUERY: &str = r"
 (function_declaration
   name: (identifier) @name) @definition.function
 
+; `declare function f(): void` and overload signatures have no body.
+(function_signature
+  name: (identifier) @name) @declaration.function
+
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
@@ -44,11 +48,13 @@ pub const QUERY: &str = r"
 (method_definition
   name: (property_identifier) @name) @definition.method
 
+; Interface members, abstract members and overload signatures declare a shape
+; without implementing it.
 (abstract_method_signature
-  name: (property_identifier) @name) @definition.method
+  name: (property_identifier) @name) @declaration.method
 
 (method_signature
-  name: (property_identifier) @name) @definition.method
+  name: (property_identifier) @name) @declaration.method
 
 ; --- Class fields ---
 
