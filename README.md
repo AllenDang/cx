@@ -276,6 +276,35 @@ cx: ranked by dependents desc, then symbols desc, then name
 
 `overview` is unchanged and remains the cheapest entry point.
 
+### Callers and callees -- direct edges with stated evidence
+
+```
+$ cx callers --name run
+
+[6]{from,to,evidence,resolution,file,line,ambiguous_candidates}:
+  run_both,"alpha::run",call,lexical_scope,src/lib.rs,18,""
+  run_both,"beta::run",call,lexical_scope,src/lib.rs,18,""
+  run_all,"",call,syntax,src/scope_b.cpp,13,"alpha::run, ange::EcsWorld::run, beta::Runner::run, ..."
+  "thirdparty::helper","thirdparty::run",call,lexical_scope,vendor/thirdparty/blob.cpp,5,""
+cx: 2 of 6 call sites are syntax evidence only; cx does not resolve types
+```
+
+Every edge says how it was established:
+
+| `resolution` | What justifies it |
+| --- | --- |
+| `syntax` | the AST puts this identifier in a callee position -- the target is not resolved |
+| `lexical_scope` | a qualifier written at the call site matched one candidate, or exactly one candidate is visible by lexical nesting |
+| `import_resolved` | the calling file imports the file defining exactly one candidate |
+
+**cx never guesses a target.** When candidates cannot be narrowed to one, `to` is empty and `ambiguous_candidates` lists them all -- so `runner.run()` is reported as an unresolved call rather than being bound to whichever `run` happened to sort first. Candidates are also restricted to the caller's language, so a C++ call never points at a TypeScript method.
+
+`cx callees --name X` lists calls written inside X's body. If several symbols share the name X it returns no rows and names the candidates, because reading one arbitrary body would answer a different question -- narrow it with `--scope`.
+
+There is no `--depth`: cx does not do multi-hop traversal, and does no type resolution, so overload resolution, virtual dispatch and template instantiation are out of scope by design.
+
+`cx references` rows also carry `evidence` (`definition`, `declaration`, `call`, `type_reference`, `import`, `identifier_reference`) and `resolution: syntax`.
+
 ### Freshness -- proving the index matches your edits
 
 Every result reports which index generation answered it and how that was checked:

@@ -603,7 +603,46 @@ struct ReferenceRow {
     line: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     caller: Option<String>,
+    /// What the AST says this occurrence is (roadmap §5.4, §14).
+    evidence: String,
+    /// How strongly the occurrence was established.  References are syntax-level
+    /// by construction: cx identifies the node, not the resolved target.
+    resolution: String,
     context: String,
+}
+
+/// Label a reference occurrence with its evidence kind.
+///
+/// The AST classification is upgraded to definition/declaration when the
+/// tightest enclosing symbol *is* the symbol being referenced — that occurrence
+/// is the symbol's own name, not a use of it.
+fn reference_evidence(
+    symbols: &[Symbol],
+    name: &str,
+    byte_offset: usize,
+    ast: crate::language::RefEvidence,
+) -> crate::relations::EvidenceKind {
+    use crate::language::RefEvidence;
+    use crate::relations::EvidenceKind;
+
+    let own_site = symbols
+        .iter()
+        .filter(|s| s.byte_range.0 <= byte_offset && byte_offset < s.byte_range.1)
+        .min_by_key(|s| s.byte_range.1 - s.byte_range.0)
+        .filter(|s| s.name == name);
+    if let Some(symbol) = own_site {
+        return match symbol.role {
+            SymbolRole::Declaration => EvidenceKind::Declaration,
+            _ => EvidenceKind::Definition,
+        };
+    }
+
+    match ast {
+        RefEvidence::Call => EvidenceKind::Call,
+        RefEvidence::TypeReference => EvidenceKind::TypeReference,
+        RefEvidence::Import => EvidenceKind::Import,
+        RefEvidence::Identifier => EvidenceKind::IdentifierReference,
+    }
 }
 
 /// Find the enclosing symbol for a byte offset in a file's symbol list.
@@ -693,10 +732,15 @@ pub fn references(
                 .unwrap_or_default();
             let caller = find_enclosing_symbol(&data.symbols, r.byte_offset)
                 .map(std::string::ToString::to_string);
+            let evidence = reference_evidence(&data.symbols, name, r.byte_offset, r.evidence);
             rows.push(ReferenceRow {
                 file: display_path(path),
                 line: r.line,
                 caller,
+                evidence: evidence.as_str().to_string(),
+                // Syntax is the honest ceiling here: the node kind is known, the
+                // target is not resolved.  Use `cx callers` for edge resolution.
+                resolution: crate::relations::ResolutionLevel::Syntax.as_str().to_string(),
                 context,
             });
         }
@@ -741,6 +785,68 @@ pub fn references(
         let paged = paginate(rows, pg);
         emit(json, "references", subject, &index.freshness, &paged, &hint_noun, NARROW_FILE)
     }
+}
+
+// --- Direct relations (callers / callees) ---
+
+/// Emit a direct caller/callee report (roadmap §9).
+///
+/// Warnings carry the ambiguity and resolution caveats the relation query
+/// produced, so an edge with an empty target is never mistaken for "no caller".
+pub fn relation_report(
+    index: &Index,
+    kind: &'static str,
+    name: &str,
+    report: crate::relations::RelationReport,
+    json: bool,
+    pg: &Pagination,
+) -> i32 {
+    let warnings = report.warnings;
+    let paged = paginate(report.rows, pg);
+
+    if json {
+        let mut next_queries = Vec::new();
+        if paged.was_truncated() {
+            next_queries.push(command_with_offset(paged.offset + paged.items.len()));
+            if paged.limit.is_some() {
+                next_queries.push(command_with_all());
+            }
+        }
+        let envelope = Envelope::new(
+            QueryInfo::new(kind, Some(name.to_string())),
+            index.freshness.clone(),
+            paged.page_info(),
+            &paged.items,
+        )
+        .with_warnings(warnings)
+        .with_next_queries(next_queries);
+        print_json(&envelope);
+        return 0;
+    }
+
+    if paged.items.is_empty() {
+        eprintln!("cx: no matches");
+        for warning in &warnings {
+            eprintln!("cx: {warning}");
+        }
+        return 0;
+    }
+
+    print_toon(&paged.items);
+    for warning in &warnings {
+        eprintln!("cx: {warning}");
+    }
+    if paged.was_truncated() {
+        let hint_noun = format!("{kind} for \"{name}\"");
+        emit_pagination_hint(
+            paged.total,
+            paged.offset,
+            paged.items.len(),
+            &hint_noun,
+            "--scope GLOB",
+        );
+    }
+    0
 }
 
 // --- Repository map ---

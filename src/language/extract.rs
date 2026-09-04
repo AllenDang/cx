@@ -7,6 +7,176 @@ use super::LanguageConfig;
 pub struct Reference {
     pub line: usize, // 1-based
     pub byte_offset: usize,
+    /// What the AST says this occurrence is (roadmap §5.4).
+    pub evidence: RefEvidence,
+}
+
+/// Syntactic classification of one identifier occurrence.
+///
+/// Derived from node kinds and ancestors only, so it is `syntax`-level evidence.
+/// Definition/declaration attribution is added by the caller, which knows the
+/// symbol table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefEvidence {
+    Call,
+    TypeReference,
+    Import,
+    Identifier,
+}
+
+/// Classify an identifier occurrence from its node kind and ancestors.
+pub(super) fn classify_reference(node: Node, source: &[u8]) -> RefEvidence {
+    if node.kind().contains("type_identifier") {
+        return RefEvidence::TypeReference;
+    }
+
+    // Walk a few ancestors: enough to see `use a::b::c`, `#include`, and a
+    // callee position, without wandering up the whole file.
+    let mut cursor = node.parent();
+    let mut child = node;
+    for _ in 0..4 {
+        let Some(parent) = cursor else { break };
+        match parent.kind() {
+            "use_declaration" | "import_statement" | "export_statement" | "preproc_include" => {
+                return RefEvidence::Import;
+            }
+            "call_expression" | "macro_invocation" | "new_expression" => {
+                // Only the callee position is a call; arguments are not.
+                for field in ["function", "macro", "constructor"] {
+                    if let Some(callee) = parent.child_by_field_name(field)
+                        && (callee.id() == child.id()
+                            || callee.byte_range().contains(&child.start_byte()))
+                    {
+                        return RefEvidence::Call;
+                    }
+                }
+            }
+            _ => {}
+        }
+        child = parent;
+        cursor = parent.parent();
+    }
+
+    let _ = source;
+    RefEvidence::Identifier
+}
+
+/// One syntactic call site (roadmap §9 step 3).
+///
+/// "Syntactic" is the whole claim: the AST says this identifier sits in the
+/// callee position of a call node.  It says nothing about which declaration the
+/// call resolves to.
+pub struct CallSite {
+    /// Bare name in the callee position (`run` in `alpha::run()`).
+    pub name: String,
+    /// Qualifier written at the call site (`alpha` in `alpha::run()`,
+    /// `runner` in `runner.run()`), when there is one.
+    pub qualifier: Option<String>,
+    pub line: usize,
+    pub byte_offset: usize,
+}
+
+/// Call node kinds and the field naming their callee, per language.
+///
+/// Only the languages whose scopes Phase 5 models are covered; anything else
+/// yields no call evidence rather than a guess.
+struct CallModel {
+    nodes: &'static [(&'static str, &'static str)],
+}
+
+fn call_model(lang: &str) -> Option<CallModel> {
+    match lang {
+        "c" | "cpp" => Some(CallModel {
+            nodes: &[("call_expression", "function")],
+        }),
+        "rust" => Some(CallModel {
+            nodes: &[
+                ("call_expression", "function"),
+                ("macro_invocation", "macro"),
+            ],
+        }),
+        "typescript" => Some(CallModel {
+            nodes: &[
+                ("call_expression", "function"),
+                ("new_expression", "constructor"),
+            ],
+        }),
+        _ => None,
+    }
+}
+
+/// Rightmost identifier leaf of a callee expression, plus the text written
+/// before it.
+///
+/// `alpha::run` → (`run`, Some("alpha")); `runner.run` → (`run`, Some("runner"));
+/// `run` → (`run`, None).
+fn split_callee(node: Node, source: &[u8]) -> Option<(String, Option<String>)> {
+    let mut cursor = node;
+    loop {
+        // Named children only: punctuation like `::` or `.` is not a name.
+        let last_named = (0..cursor.named_child_count())
+            .filter_map(|i| cursor.named_child(i as u32))
+            .next_back();
+        match last_named {
+            Some(child) if child.child_count() > 0 || cursor.kind() != child.kind() => {
+                if cursor.child_count() == 0 {
+                    break;
+                }
+                cursor = child;
+            }
+            _ => break,
+        }
+        if cursor.child_count() == 0 {
+            break;
+        }
+    }
+
+    let name = cursor.utf8_text(source).ok()?.to_string();
+    if name.is_empty() || name.contains(['(', ')', ' ', '\n']) {
+        return None;
+    }
+
+    // Whatever preceded the final name inside the callee expression.
+    let whole = node.utf8_text(source).ok()?;
+    let qualifier = whole
+        .strip_suffix(&name)
+        .map(|prefix| prefix.trim_end_matches([':', '.', '>', '-']).trim().to_string())
+        .filter(|q| !q.is_empty());
+
+    Some((name, qualifier))
+}
+
+/// Collect every syntactic call site in a parsed file.
+///
+/// Returns AST facts only: name, written qualifier, and location.  Deciding
+/// which definition a call refers to happens later, with its resolution level
+/// recorded (roadmap §5.4).
+pub(super) fn find_call_sites(lang: &str, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<CallSite> {
+    let Some(model) = call_model(lang) else {
+        return Vec::new();
+    };
+
+    let mut sites = Vec::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if let Some((_, field)) = model.nodes.iter().find(|(kind, _)| *kind == node.kind())
+            && let Some(callee) = node.child_by_field_name(field)
+            && let Some((name, qualifier)) = split_callee(callee, source)
+        {
+            sites.push(CallSite {
+                name,
+                qualifier,
+                line: callee.start_position().row + 1,
+                byte_offset: callee.start_byte(),
+            });
+        }
+        for i in (0..node.child_count()).rev() {
+            if let Some(child) = node.child(i as u32) {
+                stack.push(child);
+            }
+        }
+    }
+    sites
 }
 
 // --- Test detection ---

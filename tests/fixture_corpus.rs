@@ -298,7 +298,7 @@ fn references_are_syntax_filtered_not_text_matched() {
         out.stdout
     );
 
-    // Enclosing-symbol attribution is the only caller evidence today.
+    // Enclosing-symbol attribution names the surrounding symbol.
     let callers: Vec<&str> = rows
         .iter()
         .filter(|r| r["file"].as_str().unwrap() == "src/scope_b.cpp")
@@ -306,14 +306,46 @@ fn references_are_syntax_filtered_not_text_matched() {
         .collect();
     assert_eq!(callers, vec!["run", "run", "run_all"]);
 
-    // No evidence/resolution labelling yet — Phase 7 must add it.
-    assert!(
-        rows.iter().all(|r| r.get("evidence").is_none()),
-        "{}",
-        out.stdout
-    );
-    assert!(
-        rows.iter().all(|r| r.get("resolution").is_none()),
+    // Phase 7 (roadmap §5.4, §14): every occurrence is labelled with what the
+    // AST says it is, and with the honest ceiling for a reference query.
+    for row in &rows {
+        let evidence = row["evidence"].as_str().unwrap();
+        assert!(
+            [
+                "definition",
+                "declaration",
+                "call",
+                "type_reference",
+                "identifier_reference",
+                "import"
+            ]
+            .contains(&evidence),
+            "unexpected evidence {evidence}: {}",
+            out.stdout
+        );
+        assert_eq!(
+            row["resolution"].as_str().unwrap(),
+            "syntax",
+            "a reference query never claims more than syntax: {}",
+            out.stdout
+        );
+        assert_ne!(
+            evidence, "text",
+            "cx never reports a text-only match: {}",
+            out.stdout
+        );
+    }
+
+    // scope_b.cpp: the in-class declaration, the out-of-line definition, and a
+    // genuine call inside run_all.
+    let scope_b: Vec<(&str, u64)> = rows
+        .iter()
+        .filter(|r| r["file"].as_str().unwrap() == "src/scope_b.cpp")
+        .map(|r| (r["evidence"].as_str().unwrap(), r["line"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(
+        scope_b,
+        vec![("declaration", 4), ("definition", 7), ("call", 13)],
         "{}",
         out.stdout
     );

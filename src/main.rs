@@ -3,6 +3,7 @@ mod lang;
 mod map;
 mod output;
 mod query;
+mod relations;
 mod language;
 mod util;
 
@@ -115,6 +116,24 @@ enum Commands {
         /// Show exact reference lines with source context
         #[arg(long)]
         context: bool,
+    },
+    /// Direct callers of a symbol, with evidence and resolution level
+    Callers {
+        /// Symbol name to find callers of
+        #[arg(long)]
+        name: String,
+        /// Only edges whose target matches this qualified-name glob
+        #[arg(long)]
+        scope: Option<String>,
+    },
+    /// Direct callees written inside a symbol's body
+    Callees {
+        /// Symbol whose body to read
+        #[arg(long)]
+        name: String,
+        /// Disambiguate the symbol by qualified-name glob
+        #[arg(long)]
+        scope: Option<String>,
     },
     /// Bounded repository map: subsystems, sizes, and resolved import edges
     Map {
@@ -268,6 +287,18 @@ fn main() {
             let root = resolve_root(&cli.root, file.as_deref());
             let idx = index::Index::load_or_build(&root, &freshness);
             query::references(&idx, name, file.as_deref(), context, cli.json, &resolve_pagination(Some(50)))
+        }
+        Commands::Callers { ref name, ref scope } => {
+            let root = resolve_root(&cli.root, None);
+            let idx = index::Index::load_or_build(&root, &freshness);
+            let report = relations::callers(&idx, name, scope.as_deref());
+            query::relation_report(&idx, "callers", name, report, cli.json, &resolve_pagination(Some(50)))
+        }
+        Commands::Callees { ref name, ref scope } => {
+            let root = resolve_root(&cli.root, None);
+            let idx = index::Index::load_or_build(&root, &freshness);
+            let report = relations::callees(&idx, name, scope.as_deref());
+            query::relation_report(&idx, "callees", name, report, cli.json, &resolve_pagination(Some(50)))
         }
         Commands::Map {
             depth,

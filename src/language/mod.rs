@@ -332,6 +332,18 @@ fn parse_source(lang: &str, source: &[u8], path: &Path) -> Result<(&'static Lang
     Ok((config, tree, grammar_name))
 }
 
+pub use extract::CallSite;
+pub use extract::RefEvidence;
+
+/// Parse a file and collect every syntactic call site.
+///
+/// The result is AST evidence, not resolution: each site carries the name in the
+/// callee position plus any qualifier written there (roadmap §9 step 3).
+pub fn find_calls(lang: &str, source: &[u8], path: &Path) -> Result<Vec<CallSite>, LangError> {
+    let (_, tree, _) = parse_source(lang, source, path)?;
+    Ok(extract::find_call_sites(lang, &tree, source))
+}
+
 /// Parse source and find all identifier nodes whose text matches `name`.
 pub fn find_references(lang: &str, source: &[u8], path: &Path, name: &str) -> Result<Vec<extract::Reference>, LangError> {
     let (config, tree, _) = parse_source(lang, source, path)?;
@@ -346,6 +358,7 @@ pub fn find_references(lang: &str, source: &[u8], path: &Path, name: &str) -> Re
             refs.push(extract::Reference {
                 line: node.start_position().row + 1,
                 byte_offset: node.start_byte(),
+                evidence: extract::classify_reference(node, source),
             });
         }
         for i in (0..node.child_count()).rev() {

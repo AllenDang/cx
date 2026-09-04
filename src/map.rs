@@ -107,7 +107,7 @@ pub fn classify(path: &Path) -> PathClass {
 
 /// Result of trying to turn one written import into an indexed file.
 #[derive(Debug, PartialEq, Eq)]
-enum Resolved {
+pub(crate) enum Resolved {
     /// Exactly one indexed file matches.
     File(PathBuf),
     /// Nothing in this project matches: a system or third-party dependency.
@@ -122,7 +122,7 @@ enum Resolved {
 /// specifiers are written paths, so matching them against indexed paths is a
 /// fact. Rust module paths are matched against the conventional file layout and
 /// are reported as external when that layout does not apply.
-fn resolve_import(
+pub(crate) fn resolve_import(
     importer: &Path,
     import: &str,
     language: &str,
