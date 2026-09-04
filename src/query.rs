@@ -858,11 +858,15 @@ fn resolve_file_filter<'a>(
     Err(1)
 }
 
-/// Make a path relative to the project root if it's absolute,
-/// or resolve it from cwd if relative.
+/// Resolve a user-supplied path to its project-root-relative form.
+///
+/// Both sides go through the canonical identity (roadmap §4.1) so an argument
+/// spelled through a symlink (`/tmp/p/src/a.rs`) still matches an index built
+/// under the resolved root (`/private/tmp/p`), and vice versa.  Paths outside
+/// the project are returned unchanged so callers can report them verbatim.
 fn make_relative(path: &Path, root: &Path) -> PathBuf {
-    let abs = crate::util::path::absolute_normalize(path);
-    let root = crate::util::path::absolute_normalize(root);
+    let abs = crate::util::path::canonical(path);
+    let root = crate::util::path::canonical(root);
     abs.strip_prefix(&root).unwrap_or(&abs).to_path_buf()
 }
 

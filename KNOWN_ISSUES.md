@@ -27,3 +27,19 @@ on macOS) to bypass the version-keyed path entirely. Grammars survive crate vers
 the cache is still keyed by `CARGO_PKG_VERSION`. Not fixed upstream.
 
 **Tracking**: https://github.com/kreuzberg-dev/tree-sitter-language-pack/issues/84
+
+## Case-only path aliases are not unified
+
+Since Phase 1 (`docs/PHASE1_PATH_IDENTITY.md`), cx derives one canonical identity per project:
+absolute, `.`/`..` folded, symlinks resolved. So `/tmp/p` and `/private/tmp/p`, or a symlinked
+checkout and its target, share one index and accept path arguments in either spelling.
+
+Case-only aliases are **not** unified. On case-insensitive filesystems (macOS, Windows)
+`cx --root /tmp/Project` and `cx --root /tmp/project` reach the same directory, but `realpath`
+does not correct case, so the two spellings hash to two index files. Each stays internally
+consistent; they just do not share a cache.
+
+**Workaround**: use one spelling per project (`cx cache path` shows which index a spelling maps to).
+
+General case folding is deliberately not attempted: on a case-sensitive volume it would merge
+directories that genuinely differ. The Windows drive letter *is* normalized to upper case.

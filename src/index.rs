@@ -14,9 +14,11 @@ use crate::language::{LangError, detect_language, download_names_for, parse_and_
 pub const INDEX_VERSION: u32 = 8;
 
 /// Compute the cache path for a given project root.
-/// Returns `~/.cache/cx/indexes/<hash>.db` where hash is derived from the canonical path.
+/// Returns `~/.cache/cx/indexes/<hash>.db` where hash is derived from the
+/// canonical identity of the root (roadmap §4.1), so aliased spellings of the
+/// same directory share one index.
 pub fn cache_path_for(root: &Path) -> PathBuf {
-    let canonical = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let canonical = crate::util::path::canonical(root);
     let mut hasher = DefaultHasher::new();
     canonical.hash(&mut hasher);
     let hash = hasher.finish();
@@ -33,6 +35,8 @@ const FILES_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("files");
 const SYMBOLS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("symbols");
 
 pub struct Index {
+    /// Canonical project root: absolute, normalized, symlinks resolved.
+    /// Every indexed path is stored relative to this root.
     pub root: PathBuf,
     db: Option<Database>,
     /// In-memory mirror for fast query access.
@@ -243,10 +247,15 @@ fn needs_update(root: &Path, entries: &HashMap<PathBuf, FileData>) -> bool {
 impl Index {
     /// Load or build the index for the given project root.
     ///
+    /// `root` is canonicalized first so the cache key, `Index.root`, and the
+    /// relative paths derived from it all share one identity.
+    ///
     /// Tries a shared (read-only) open first so multiple cx processes can
     /// run concurrently.  Falls back to an exclusive open only when the
     /// index needs to be created or updated.
     pub fn load_or_build(root: &Path) -> Self {
+        let root = crate::util::path::canonical(root);
+        let root = root.as_path();
         let db_path = cache_path_for(root);
         if let Some(parent) = db_path.parent() {
             let _ = fs::create_dir_all(parent);
