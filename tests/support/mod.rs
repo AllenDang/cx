@@ -74,12 +74,34 @@ impl Run {
         })
     }
 
-    /// Number of elements when stdout is a JSON array.
+    /// The `results` array of the JSON v1 envelope.
+    pub fn results(&self) -> Vec<serde_json::Value> {
+        let doc = self.json();
+        let results = doc.get("results").unwrap_or_else(|| {
+            panic!("envelope has no results key:\n{}", self.stdout);
+        });
+        results
+            .as_array()
+            .unwrap_or_else(|| panic!("results is not an array:\n{}", self.stdout))
+            .clone()
+    }
+
+    /// Number of rows in the envelope's `results` array.
     pub fn json_len(&self) -> usize {
-        match self.json() {
-            serde_json::Value::Array(a) => a.len(),
-            other => panic!("expected JSON array, got: {other}"),
-        }
+        self.results().len()
+    }
+
+    /// The envelope's `page` object.
+    pub fn page(&self) -> serde_json::Value {
+        self.json()["page"].clone()
+    }
+
+    /// The envelope's error code, when the query failed.
+    pub fn error_code(&self) -> Option<String> {
+        let doc = self.json();
+        doc["error"]
+            .as_object()
+            .and_then(|e| e["code"].as_str().map(std::string::ToString::to_string))
     }
 }
 

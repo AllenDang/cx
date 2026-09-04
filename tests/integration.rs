@@ -30,6 +30,25 @@ fn cx_in(dir: &std::path::Path) -> Command {
     cmd
 }
 
+/// Extract the `results` array from cx's JSON v1 envelope (roadmap §6.1).
+/// The root is always an object, so a bare-array expectation is a contract bug.
+fn json_results(stdout: &str) -> Vec<serde_json::Value> {
+    let doc: serde_json::Value =
+        serde_json::from_str(stdout).unwrap_or_else(|e| panic!("invalid JSON ({e}): {stdout}"));
+    assert!(doc.is_object(), "envelope root must be an object: {stdout}");
+    doc["results"]
+        .as_array()
+        .unwrap_or_else(|| panic!("envelope has no results array: {stdout}"))
+        .clone()
+}
+
+/// Extract the `page` object from cx's JSON v1 envelope.
+fn json_page(stdout: &str) -> serde_json::Value {
+    let doc: serde_json::Value =
+        serde_json::from_str(stdout).unwrap_or_else(|e| panic!("invalid JSON ({e}): {stdout}"));
+    doc["page"].clone()
+}
+
 /// Create two isolated temp projects so we can test cross-project root resolution.
 /// Returns (project_a, project_b) temp dirs.
 fn two_projects() -> (tempfile::TempDir, tempfile::TempDir) {
@@ -107,25 +126,32 @@ fn symbols_no_match_exits_0() {
 }
 
 #[test]
-fn json_overview() {
+fn json_overview_uses_the_v1_envelope() {
     let out = cx().args(["--json", "overview", "src/main.rs"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success());
     let parsed: serde_json::Value = serde_json::from_str(&stdout)
         .expect("should be valid JSON");
-    assert!(parsed.is_array());
+    // Phase 3: the root is an object for every command and every result count.
+    assert!(parsed.is_object(), "root must be the envelope object: {stdout}");
+    assert_eq!(parsed["schema_version"].as_u64().unwrap(), 1);
+    assert_eq!(parsed["query"]["kind"].as_str().unwrap(), "overview");
+    assert!(!json_results(&stdout).is_empty());
 }
 
 #[test]
-fn json_definition_always_array() {
+fn json_definition_always_uses_the_envelope() {
     let out = cx().args(["--json", "definition", "--name", "main"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success());
     let parsed: serde_json::Value = serde_json::from_str(&stdout)
         .expect("should be valid JSON");
-    // Always an array, even for single results (audit fix)
-    assert!(parsed.is_array(), "definition JSON should always be an array: {stdout}");
-    assert_eq!(parsed.as_array().unwrap().len(), 1);
+    // Same root object for a single result as for a truncated page.
+    assert!(parsed.is_object(), "definition JSON must be the envelope: {stdout}");
+    assert_eq!(parsed["query"]["kind"].as_str().unwrap(), "definition");
+    assert_eq!(parsed["query"]["subject"].as_str().unwrap(), "main");
+    assert_eq!(json_results(&stdout).len(), 1);
+    assert!(!json_page(&stdout)["truncated"].as_bool().unwrap());
 }
 
 // --- Definition --from and --max-lines tests ---
@@ -140,8 +166,8 @@ fn definition_from_disambiguates() {
     // Without --from: should find both
     let out = cx_in(dir.path()).args(["--json", "definition", "--name", "helper"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(parsed.as_array().unwrap().len(), 2, "should find both: {stdout}");
+    let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json_results(&stdout).len(), 2, "should find both: {stdout}");
 
     // With --from: should find only one
     let out2 = cx_in(dir.path())
@@ -149,8 +175,8 @@ fn definition_from_disambiguates() {
         .output()
         .unwrap();
     let stdout2 = String::from_utf8_lossy(&out2.stdout);
-    let parsed2: serde_json::Value = serde_json::from_str(&stdout2).unwrap();
-    let arr = parsed2.as_array().unwrap();
+    let _parsed2: serde_json::Value = serde_json::from_str(&stdout2).unwrap();
+    let arr = json_results(&stdout2);
     assert_eq!(arr.len(), 1, "should find one: {stdout2}");
     assert_eq!(arr[0]["file"].as_str().unwrap(), "src/a.rs");
 }
@@ -172,8 +198,9 @@ fn definition_max_lines_truncates() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let item = &parsed.as_array().unwrap()[0];
+    let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let rows = json_results(&stdout);
+    let item = &rows[0];
     assert_eq!(item["truncated"].as_bool(), Some(true), "should be truncated: {stdout}");
     assert!(item["lines"].as_u64().unwrap() > 200, "should report total lines: {stdout}");
 }
@@ -312,8 +339,8 @@ fn definition_kind_filter() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let arr = parsed.as_array().unwrap();
+    let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let arr = json_results(&stdout);
     assert_eq!(arr.len(), 1, "should find only the fn, not the struct: {stdout}");
     assert!(arr[0]["body"].as_str().unwrap().contains("fn Foo()"));
 }
@@ -349,8 +376,8 @@ fn references_dedup_same_line() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let arr = parsed.as_array().unwrap();
+    let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let arr = json_results(&stdout);
     // Line 1 has Foo twice (param + return), should be deduped to one entry
     let line1_refs: Vec<_> = arr.iter().filter(|r| r["line"] == 1).collect();
     assert_eq!(line1_refs.len(), 1, "same-line refs should be deduped: {stdout}");
@@ -368,8 +395,8 @@ fn references_summary_groups_by_file() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let arr = parsed.as_array().unwrap();
+    let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let arr = json_results(&stdout);
     let a = arr
         .iter()
         .find(|row| row["file"] == "src/a.rs")
@@ -548,8 +575,9 @@ fn overview_directory_nonexistent() {
 fn json_definition_has_expected_fields() {
     let out = cx().args(["--json", "definition", "--name", "main"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let item = &parsed.as_array().unwrap()[0];
+    let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let rows = json_results(&stdout);
+    let item = &rows[0];
     assert!(item["file"].is_string());
     assert!(item["line"].is_number());
     assert!(item["body"].is_string());
@@ -576,11 +604,37 @@ fn definition_default_limit_truncates() {
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     // Should be paginated JSON (object with total/results)
     assert!(parsed.is_object(), "paginated output should be an object: {stdout}");
-    assert_eq!(parsed["total"].as_u64().unwrap(), 5);
+    assert_eq!(parsed["page"]["total"].as_u64().unwrap(), 5);
     assert_eq!(parsed["results"].as_array().unwrap().len(), 3);
 
-    // Stderr should contain the pagination hint
+    // Truncation and the follow-up commands live in the payload under --json.
+    assert!(parsed["page"]["truncated"].as_bool().unwrap());
+    let next: Vec<&str> = parsed["next_queries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        next,
+        vec![
+            "cx --json definition --name helper --offset 3",
+            "cx --json definition --name helper --all",
+        ],
+        "{stdout}"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("3/5"),
+        "json mode must not duplicate the hint on stderr: {stderr}"
+    );
+
+    // Without --json the stderr hint is unchanged.
+    let toon = cx_in(dir.path())
+        .args(["definition", "--name", "helper"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&toon.stderr);
     assert!(stderr.contains("3/5"), "should show 3/5 in hint: {stderr}");
     assert!(stderr.contains("--offset 3"), "should suggest next offset: {stderr}");
     assert!(stderr.contains("--all"), "should suggest --all: {stderr}");
@@ -604,8 +658,8 @@ fn definition_offset_paginates() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert!(parsed.is_object(), "offset > 0 should produce paginated envelope: {stdout}");
-    assert_eq!(parsed["total"].as_u64().unwrap(), 5);
-    assert_eq!(parsed["offset"].as_u64().unwrap(), 3);
+    assert_eq!(parsed["page"]["total"].as_u64().unwrap(), 5);
+    assert_eq!(parsed["page"]["offset"].as_u64().unwrap(), 3);
     assert_eq!(parsed["results"].as_array().unwrap().len(), 2);
 }
 
@@ -625,8 +679,10 @@ fn definition_all_bypasses_limit() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert!(parsed.is_array(), "should be bare array with --all: {stdout}");
-    assert_eq!(parsed.as_array().unwrap().len(), 5);
+    // --all means no limit, and the envelope says so explicitly.
+    assert!(parsed["page"]["limit"].is_null(), "--all must report no limit: {stdout}");
+    assert!(!parsed["page"]["truncated"].as_bool().unwrap());
+    assert_eq!(json_results(&stdout).len(), 5);
 }
 
 #[test]
@@ -650,9 +706,10 @@ fn definition_from_skips_default_limit() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    // Bare array — no pagination envelope because --from disables default limit
-    assert!(parsed.is_array(), "should be bare array when --from used: {stdout}");
-    let arr = parsed.as_array().unwrap();
+    // --from disables the default limit, which the envelope reports as null.
+    assert!(parsed["page"]["limit"].is_null(), "--from must not apply a limit: {stdout}");
+    assert!(!parsed["page"]["truncated"].as_bool().unwrap());
+    let arr = json_results(&stdout);
     assert_eq!(arr.len(), 1);
     assert!(arr[0]["file"].as_str().unwrap().contains("a.rs"));
 
@@ -664,7 +721,7 @@ fn definition_from_skips_default_limit() {
     let stdout2 = String::from_utf8_lossy(&out2.stdout);
     let parsed2: serde_json::Value = serde_json::from_str(&stdout2).unwrap();
     assert!(parsed2.is_object(), "without --from should be paginated: {stdout2}");
-    assert_eq!(parsed2["total"].as_u64().unwrap(), 5);
+    assert_eq!(parsed2["page"]["total"].as_u64().unwrap(), 5);
     assert_eq!(parsed2["results"].as_array().unwrap().len(), 3);
 }
 
@@ -686,7 +743,7 @@ fn definition_explicit_limit_overrides_default() {
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert!(parsed.is_object(), "should be paginated: {stdout}");
     assert_eq!(parsed["results"].as_array().unwrap().len(), 2);
-    assert_eq!(parsed["total"].as_u64().unwrap(), 5);
+    assert_eq!(parsed["page"]["total"].as_u64().unwrap(), 5);
 }
 
 #[test]
@@ -722,7 +779,7 @@ fn references_pagination() {
     // Should be paginated if total > 2
     if parsed.is_object() {
         assert_eq!(parsed["results"].as_array().unwrap().len(), 2);
-        assert!(parsed["total"].as_u64().unwrap() >= 2);
+        assert!(parsed["page"]["total"].as_u64().unwrap() >= 2);
     }
     // If total happens to be exactly 2, it won't paginate — that's fine
 }
@@ -742,21 +799,27 @@ fn json_paginated_has_metadata() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert!(parsed["total"].is_number(), "should have total: {stdout}");
-    assert!(parsed["offset"].is_number(), "should have offset: {stdout}");
-    assert!(parsed["limit"].is_number(), "should have limit: {stdout}");
+    assert!(parsed["page"]["total"].is_number(), "should have total: {stdout}");
+    assert!(parsed["page"]["offset"].is_number(), "should have offset: {stdout}");
+    assert!(parsed["page"]["limit"].is_number(), "should have limit: {stdout}");
     assert!(parsed["results"].is_array(), "should have results: {stdout}");
-    assert_eq!(parsed["offset"].as_u64().unwrap(), 0);
-    assert_eq!(parsed["limit"].as_u64().unwrap(), 2);
+    assert_eq!(parsed["page"]["offset"].as_u64().unwrap(), 0);
+    assert_eq!(parsed["page"]["limit"].as_u64().unwrap(), 2);
 }
 
 #[test]
-fn no_pagination_when_under_limit() {
-    // Single match — should produce bare array, no pagination metadata
+fn complete_result_set_reports_no_truncation() {
+    // Single match — same envelope, with truncated=false and no next_queries.
     let out = cx().args(["--json", "definition", "--name", "main"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert!(parsed.is_array(), "single result should be bare array: {stdout}");
+    assert!(parsed.is_object(), "root is always the envelope: {stdout}");
+    assert!(!parsed["page"]["truncated"].as_bool().unwrap());
+    assert!(
+        parsed["next_queries"].as_array().unwrap().is_empty(),
+        "nothing to page to: {stdout}"
+    );
+    assert!(parsed["error"].is_null(), "{stdout}");
 }
 
 // --- Directory filtering ---
@@ -829,8 +892,8 @@ fn symbols_file_directory_shows_file_column() {
     let out = cx_in(dir.path()).args(["--json", "symbols", "--kind", "fn", "--file", "src"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let arr = parsed.as_array().unwrap();
+    let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let arr = json_results(&stdout);
     assert!(arr.iter().all(|r| r.get("file").is_some()), "directory query should include file column: {stdout}");
 }
 
@@ -840,8 +903,8 @@ fn symbols_file_single_file_hides_file_column() {
     let out = cx_in(dir.path()).args(["--json", "symbols", "--kind", "fn", "--file", "src/lib.rs"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let arr = parsed.as_array().unwrap();
+    let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let arr = json_results(&stdout);
     assert!(arr.iter().all(|r| r.get("file").is_none()), "single-file query should omit file column: {stdout}");
 }
 
@@ -979,8 +1042,8 @@ fn definition_absolute_from_resolves_foreign_project() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "should succeed: {}", String::from_utf8_lossy(&out.stderr));
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let arr = parsed.as_array().unwrap();
+    let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let arr = json_results(&stdout);
     assert_eq!(arr.len(), 1);
     // B's shared() has "{ 2 }" in the body
     assert!(arr[0]["body"].as_str().unwrap().contains("2"),

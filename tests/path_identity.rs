@@ -195,8 +195,9 @@ fn results_use_root_relative_paths_regardless_of_spelling() {
             ],
         );
         assert_eq!(out.code, 0, "stderr: {}", out.stderr);
-        let rows = out.json();
-        for row in rows.as_array().unwrap() {
+        let rows = out.results();
+        assert!(!rows.is_empty(), "{}", out.stdout);
+        for row in &rows {
             assert_eq!(row["file"].as_str().unwrap(), "src/a.rs", "{}", out.stdout);
         }
     }

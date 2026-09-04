@@ -93,8 +93,29 @@ cx references --name NAME [--file PATH] [--context]  find usages, `--context` wi
 
 Default limits: overview: unlimited, definition 3, symbols 100, references 50.
 
-When truncated, stderr shows: `cx: 3/32 definitions for "X"`. Use `--file` (or `--from`) and `--kind` to narrow, or use
+When truncated, stderr shows: `cx: 3/32 definitions for "X"`. Use `--file` (or `--from`), `--kind` and `--role` to narrow, or use
 `--offset` to get further pages, or `--all` to get all results.
 
-When not limited, `--json` returns an array of results. When limited, it returns an object with
-shape `{total, offset, limit, results: <array containing $limit results>}`.
+## JSON contract
+
+`--json` always returns one object with a fixed key set, regardless of command or result count:
+
+```json
+{
+  "schema_version": 1,
+  "query": { "kind": "symbols", "subject": "run" },
+  "page": { "total": 12, "offset": 0, "limit": 4, "truncated": true },
+  "results": [],
+  "warnings": [],
+  "next_queries": ["cx --json symbols --name run --limit 4 --offset 4"],
+  "error": null
+}
+```
+
+- Zero results is `results: []` with `error: null` and exit 0 — not a failure.
+- A failure sets `error.code` (`file_not_indexed`, `unsupported_file_type`, `no_indexed_files`,
+  `grammar_not_installed`) and exits 1. Exit 2 means bad arguments.
+- `next_queries` entries are runnable as-is; prefer them over composing your own `--offset`.
+- `warnings` flags things like several candidates sharing one name — read it before assuming the first
+  result is the only one.
+- Under `--json`, stderr stays quiet; the payload is authoritative.

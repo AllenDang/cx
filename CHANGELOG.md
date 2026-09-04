@@ -8,12 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Versioned JSON envelope (`schema_version: 1`) for every `--json` command: `{schema_version, query, page, results, warnings, next_queries, error}` with a fixed key set that never varies by result count.
+- `next_queries` supplies exact, runnable follow-up commands for truncated pages instead of a prose hint.
+- Machine-readable error codes: `file_not_indexed`, `unsupported_file_type`, `no_indexed_files`, `grammar_not_installed`.
+- `warnings` reports ambiguity, e.g. several candidates sharing one symbol name.
 - `role` on every symbol, distinguishing `definition` from `declaration` (plus `heading` and `unknown`). C/C++ prototypes and forward type declarations, Rust trait requirements and `extern` items, and TypeScript interface/abstract/ambient members are now machine-distinguishable from implementations. Roles come from grammar captures, never from guessing at braces.
 - `--role` filter on `cx symbols` and `cx definition`.
 - `cx definition` sorts implementations ahead of signature-only sites, so the first result is the body.
 - Fixture corpus (`tests/fixtures/agent_corpus`) and `scripts/bench.sh` for reproducible correctness and performance baselines.
 
 ### Changed
+- **Breaking (`--json` only):** JSON output is always an envelope object. Previously the root was a bare array unless results were truncated or offset. Read `results` for rows and `page` for `{total, offset, limit, truncated}`.
+- A successful query with zero results now returns a parseable envelope with `results: []` and exit 0, instead of printing nothing.
+- Under `--json`, cx no longer duplicates notes and pagination hints on stderr; the payload is authoritative. Without `--json`, stderr output is unchanged.
 - One canonical path identity for the project root, index cache key, and every path argument: symlinked spellings such as `/tmp/p` and `/private/tmp/p` now share an index and accept arguments in either form. Case-only aliases remain separate (see KNOWN_ISSUES.md).
 - `INDEX_VERSION` 8 → 9; existing indexes rebuild automatically on first use.
 - TOON and JSON symbol rows include a `role` column; `cx definition` plain-text output includes a `role:` line.

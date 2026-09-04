@@ -6,7 +6,10 @@ use serde::Serialize;
 
 use crate::index::{FileData, Index, Symbol, SymbolKind, SymbolRole};
 use crate::language::{self, detect_language};
-use crate::output::{print_toon, print_json};
+use crate::output::{
+    Envelope, ErrorCode, PageInfo, QueryInfo, command_with_all, command_with_offset,
+    print_error_json, print_json, print_toon,
+};
 use crate::util::glob::glob_match;
 
 // --- Pagination ---
@@ -37,10 +40,13 @@ impl<T> Paginated<T> {
         self.offset + self.items.len() < self.total
     }
 
-    /// True when JSON output should use the paginated envelope
-    /// (either truncated or mid-pagination via offset).
-    const fn needs_envelope(&self) -> bool {
-        self.was_truncated() || self.offset > 0
+    const fn page_info(&self) -> PageInfo {
+        PageInfo {
+            total: self.total,
+            offset: self.offset,
+            limit: self.limit,
+            truncated: self.was_truncated(),
+        }
     }
 }
 
@@ -53,15 +59,81 @@ fn paginate<T>(items: Vec<T>, pg: &Pagination) -> Paginated<T> {
     Paginated { items: visible, total, offset: pg.offset, limit: pg.limit }
 }
 
-/// Wraps results with pagination metadata for JSON output.
-#[derive(Serialize)]
-struct PaginatedJson<'a, T: Serialize> {
-    total: usize,
-    offset: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    limit: Option<usize>,
-    results: &'a [T],
+/// A query that could not be answered, as opposed to one that found nothing
+/// (roadmap §6.2).
+struct QueryFailure {
+    code: ErrorCode,
+    message: String,
 }
+
+/// Emit a failure: an error envelope under `--json`, the familiar `cx: ...`
+/// line otherwise.  Always exit code 1.
+fn fail(json: bool, kind: &'static str, subject: Option<String>, failure: QueryFailure) -> i32 {
+    if json {
+        print_error_json(
+            QueryInfo::new(kind, subject),
+            failure.code,
+            &failure.message,
+        );
+    } else {
+        eprintln!("cx: {}", failure.message);
+    }
+    1
+}
+
+/// Emit a successful page of results.
+///
+/// JSON always returns the same envelope object, whether the result set is
+/// empty, complete, or truncated (roadmap §6.1).  TOON keeps its compact
+/// tabular body plus the stderr hints agents already rely on.
+fn emit<T: Serialize>(
+    json: bool,
+    kind: &'static str,
+    subject: Option<String>,
+    paged: &Paginated<T>,
+    hint_noun: &str,
+    narrow_hint: &str,
+) -> i32 {
+    if json {
+        let mut next_queries = Vec::new();
+        if paged.was_truncated() {
+            next_queries.push(command_with_offset(paged.offset + paged.items.len()));
+            if paged.limit.is_some() {
+                next_queries.push(command_with_all());
+            }
+        }
+        let envelope = Envelope::new(
+            QueryInfo::new(kind, subject),
+            paged.page_info(),
+            &paged.items,
+        )
+        .with_next_queries(next_queries);
+        print_json(&envelope);
+        return 0;
+    }
+
+    if paged.items.is_empty() {
+        eprintln!("cx: no matches");
+        return 0;
+    }
+    print_toon(&paged.items);
+    if paged.was_truncated() {
+        emit_pagination_hint(
+            paged.total,
+            paged.offset,
+            paged.items.len(),
+            hint_noun,
+            narrow_hint,
+        );
+    }
+    0
+}
+
+/// Narrowing hints shown on stderr when TOON output is truncated.
+const NARROW_SYMBOLS: &str = "--file PATH | --kind KIND | --role ROLE";
+const NARROW_FROM: &str = "--from PATH";
+const NARROW_FILE: &str = "--file PATH";
+const NARROW_SUBDIR: &str = "cx overview <subdir>";
 
 /// Emit a compact pagination hint on stderr.
 fn emit_pagination_hint(total: usize, offset: usize, shown: usize, subject: &str, narrow_hint: &str) {
@@ -69,16 +141,6 @@ fn emit_pagination_hint(total: usize, offset: usize, shown: usize, subject: &str
     eprintln!(
         "cx: {shown}/{total} {subject} | {narrow_hint} to narrow | --offset {next_offset} for more | --all"
     );
-}
-
-fn print_paginated_json<T: Serialize>(pg: &Paginated<T>) {
-    let wrapper = PaginatedJson {
-        total: pg.total,
-        offset: pg.offset,
-        limit: pg.limit,
-        results: &pg.items,
-    };
-    print_json(&wrapper);
 }
 
 // --- Serializable output types ---
@@ -148,14 +210,19 @@ pub fn symbols(
 ) -> i32 {
     let (file, name_glob, kind_filter, role_filter) =
         (filters.file, filters.name_glob, filters.kind, filters.role);
+    // `ranges` is only set by `cx overview <file>`; report that as the query kind.
+    let query_kind = if ranges { "overview" } else { "symbols" };
     let mut rows: Vec<SymbolRow<'_>> = Vec::new();
 
     let rel_path = file.map(|f| make_relative(f, &index.root));
+    let subject = name_glob
+        .map(std::string::ToString::to_string)
+        .or_else(|| rel_path.as_deref().map(display_path));
 
     let files_to_search: Vec<(&PathBuf, &FileData)> = match rel_path {
         Some(ref rel) => match resolve_file_filter(rel, index) {
             Ok(v) => v,
-            Err(code) => return code,
+            Err(failure) => return fail(json, query_kind, subject, failure),
         },
         None => index.entries.iter().collect(),
     };
@@ -208,18 +275,7 @@ pub fn symbols(
             })
             .collect();
         let paged = paginate(out, pg);
-        if json {
-            if paged.needs_envelope() {
-                print_paginated_json(&paged);
-            } else {
-                print_json(&paged.items);
-            }
-        } else {
-            print_toon(&paged.items);
-        }
-        if paged.was_truncated() {
-            emit_pagination_hint(paged.total, paged.offset, paged.items.len(), "symbols", "--file PATH | --kind KIND");
-        }
+        emit(json, query_kind, subject, &paged, "symbols", NARROW_SYMBOLS)
     } else {
         let out: Vec<SymbolRowOut> = rows
             .into_iter()
@@ -232,21 +288,8 @@ pub fn symbols(
             })
             .collect();
         let paged = paginate(out, pg);
-        if json {
-            if paged.needs_envelope() {
-                print_paginated_json(&paged);
-            } else {
-                print_json(&paged.items);
-            }
-        } else {
-            print_toon(&paged.items);
-        }
-        if paged.was_truncated() {
-            emit_pagination_hint(paged.total, paged.offset, paged.items.len(), "symbols", "--file PATH | --kind KIND");
-        }
+        emit(json, query_kind, subject, &paged, "symbols", NARROW_SYMBOLS)
     }
-
-    0
 }
 
 /// Serializable row for `kind_counts` output.
@@ -263,11 +306,12 @@ pub fn kind_counts(
     json: bool,
 ) -> i32 {
     let rel_path = file.map(|f| make_relative(f, &index.root));
+    let subject = rel_path.as_deref().map(display_path);
 
     let files_to_search: Vec<(&PathBuf, &FileData)> = match rel_path {
         Some(ref rel) => match resolve_file_filter(rel, index) {
             Ok(v) => v,
-            Err(code) => return code,
+            Err(failure) => return fail(json, "kinds", subject, failure),
         },
         None => index.entries.iter().collect(),
     };
@@ -279,24 +323,16 @@ pub fn kind_counts(
         }
     }
 
-    if counts.is_empty() {
-        eprintln!("cx: no symbols in index");
-        return 0;
-    }
-
     let mut rows: Vec<KindCountRow> = counts
         .into_iter()
         .map(|(kind, count)| KindCountRow { kind: kind.to_string(), count })
         .collect();
     rows.sort_by_key(|r| std::cmp::Reverse(r.count));
 
-    if json {
-        print_json(&rows);
-    } else {
-        print_toon(&rows);
-    }
-
-    0
+    // Kind counts are already an aggregate, so they are never paginated.
+    let total = rows.len();
+    let paged = Paginated { items: rows, total, offset: 0, limit: None };
+    emit(json, "kinds", subject, &paged, "kinds", NARROW_FILE)
 }
 
 /// Execute the definition query: find symbol by exact name, return its body.
@@ -345,10 +381,8 @@ pub fn definition(
         }
     }
 
-    if matches.is_empty() {
-        eprintln!("cx: no matches");
-        return 0;
-    }
+    // An empty match set is a successful query with no results, not an error,
+    // so it flows through to the normal emit path (roadmap §6.2).
 
     // Sort implementations ahead of signature-only sites, then by symbol
     // priority (types first), then by file path.  An agent asking for a
@@ -391,33 +425,53 @@ pub fn definition(
         .collect();
 
     if json {
-        if paged_matches.needs_envelope() {
-            let wrapper = PaginatedJson {
-                total: paged_matches.total,
-                offset: paged_matches.offset,
-                limit: paged_matches.limit,
-                results: &results,
-            };
-            print_json(&wrapper);
-        } else {
-            print_json(&results);
-        }
-    } else {
-        for (i, r) in results.iter().enumerate() {
-            if i > 0 {
-                println!();
+        let mut next_queries = Vec::new();
+        if paged_matches.was_truncated() {
+            next_queries.push(command_with_offset(paged_matches.offset + results.len()));
+            if paged_matches.limit.is_some() {
+                next_queries.push(command_with_all());
             }
-            print!("file: {}\nline: {}\nrole: {}", r.file, r.line, r.role);
-            if let Some(total) = r.lines {
-                print!("\ntruncated: {total} lines total");
-            }
-            println!("\n---\n{}", r.body);
         }
+        // Several candidates sharing one name is an ambiguity, not a pick-one
+        // situation: report it instead of silently dropping candidates
+        // (roadmap §6.2).  Phase 5 replaces this with qualified identity.
+        let mut warnings = Vec::new();
+        if paged_matches.total > 1 {
+            warnings.push(format!(
+                "{} candidates share the name \"{name}\"; ordered implementations first, not disambiguated by scope",
+                paged_matches.total
+            ));
+        }
+        let envelope = Envelope::new(
+            QueryInfo::new("definition", Some(name.to_string())),
+            paged_matches.page_info(),
+            &results,
+        )
+        .with_warnings(warnings)
+        .with_next_queries(next_queries);
+        print_json(&envelope);
+        return 0;
+    }
+
+    if results.is_empty() {
+        eprintln!("cx: no matches");
+        return 0;
+    }
+
+    for (i, r) in results.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        print!("file: {}\nline: {}\nrole: {}", r.file, r.line, r.role);
+        if let Some(total) = r.lines {
+            print!("\ntruncated: {total} lines total");
+        }
+        println!("\n---\n{}", r.body);
     }
 
     if paged_matches.was_truncated() {
-        let subject = format!("definitions for \"{name}\"");
-        emit_pagination_hint(paged_matches.total, paged_matches.offset, results.len(), &subject, "--from PATH");
+        let hint_noun = format!("definitions for \"{name}\"");
+        emit_pagination_hint(paged_matches.total, paged_matches.offset, results.len(), &hint_noun, NARROW_FROM);
     }
 
     0
@@ -461,11 +515,12 @@ pub fn references(
     pg: &Pagination,
 ) -> i32 {
     let rel_path = file.map(|f| make_relative(f, &index.root));
+    let subject = Some(name.to_string());
 
     let files_to_search: Vec<(&PathBuf, &FileData)> = match rel_path {
         Some(ref rel) => match resolve_file_filter(rel, index) {
             Ok(v) => v,
-            Err(code) => return code,
+            Err(failure) => return fail(json, "references", subject, failure),
         },
         None => index.entries.iter().collect(),
     };
@@ -488,8 +543,17 @@ pub fn references(
         let refs = match language::find_references(&data.meta.language, &source, &abs_path, name) {
             Ok(r) => r,
             Err(language::LangError::NotInstalled(lang)) => {
-                eprintln!("cx: {lang} grammar not installed — run: cx lang add {lang}");
-                return 1;
+                return fail(
+                    json,
+                    "references",
+                    subject,
+                    QueryFailure {
+                        code: ErrorCode::GrammarNotInstalled,
+                        message: format!(
+                            "{lang} grammar not installed — run: cx lang add {lang}"
+                        ),
+                    },
+                );
             }
             Err(_) => continue,
         };
@@ -517,15 +581,12 @@ pub fn references(
         }
     }
 
-    if rows.is_empty() {
-        eprintln!("cx: no matches");
-        return 0;
-    }
-
+    // An empty result set is not an error: it flows through the normal path so
+    // `--json` still returns the standard envelope (roadmap §6.2).
     rows.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
     rows.dedup_by(|a, b| a.file == b.file && a.line == b.line);
 
-    let narrow_hint = "--file PATH";
+    let hint_noun = format!("references for \"{name}\"");
 
     if !context {
         let mut by_file: std::collections::BTreeMap<String, (usize, std::collections::BTreeSet<String>, Vec<usize>)> =
@@ -554,29 +615,11 @@ pub fn references(
             })
             .collect();
         let paged = paginate(summary_rows, pg);
-        if json {
-            if paged.needs_envelope() { print_paginated_json(&paged); } else { print_json(&paged.items); }
-        } else {
-            print_toon(&paged.items);
-        }
-        if paged.was_truncated() {
-            let subject = format!("references for \"{name}\"");
-            emit_pagination_hint(paged.total, paged.offset, paged.items.len(), &subject, narrow_hint);
-        }
+        emit(json, "references", subject, &paged, &hint_noun, NARROW_FILE)
     } else {
         let paged = paginate(rows, pg);
-        if json {
-            if paged.needs_envelope() { print_paginated_json(&paged); } else { print_json(&paged.items); }
-        } else {
-            print_toon(&paged.items);
-        }
-        if paged.was_truncated() {
-            let subject = format!("references for \"{name}\"");
-            emit_pagination_hint(paged.total, paged.offset, paged.items.len(), &subject, narrow_hint);
-        }
+        emit(json, "references", subject, &paged, &hint_noun, NARROW_FILE)
     }
-
-    0
 }
 
 // --- Directory overview ---
@@ -689,8 +732,15 @@ pub fn dir_overview(
         .collect();
 
     if all_entries.is_empty() {
-        eprintln!("cx: no indexed files under {}", display_path(&rel_dir));
-        return 1;
+        return fail(
+            json,
+            "overview",
+            Some(display_path(&rel_dir)),
+            QueryFailure {
+                code: ErrorCode::NoIndexedFiles,
+                message: format!("no indexed files under {}", display_path(&rel_dir)),
+            },
+        );
     }
 
     // Partition into direct files and subdirectory aggregates
@@ -737,6 +787,8 @@ pub fn dir_overview(
         syms
     }
 
+    let subject = Some(display_path(&rel_dir));
+
     if full {
         let mut rows: Vec<DirOverviewFullRow> = Vec::new();
         let mut line_cache = std::collections::HashMap::new();
@@ -773,14 +825,7 @@ pub fn dir_overview(
             }
         }
         let paged = paginate(rows, pg);
-        if json {
-            if paged.needs_envelope() { print_paginated_json(&paged); } else { print_json(&paged.items); }
-        } else {
-            print_toon(&paged.items);
-        }
-        if paged.was_truncated() {
-            emit_pagination_hint(paged.total, paged.offset, paged.items.len(), "entries", "cx overview <subdir>");
-        }
+        emit(json, "overview", subject, &paged, "entries", NARROW_SUBDIR)
     } else {
         let mut rows: Vec<DirOverviewRow> = Vec::new();
         for (dir_name, (file_count, sym_count)) in &subdirs {
@@ -812,17 +857,8 @@ pub fn dir_overview(
             });
         }
         let paged = paginate(rows, pg);
-        if json {
-            if paged.needs_envelope() { print_paginated_json(&paged); } else { print_json(&paged.items); }
-        } else {
-            print_toon(&paged.items);
-        }
-        if paged.was_truncated() {
-            emit_pagination_hint(paged.total, paged.offset, paged.items.len(), "entries", "cx overview <subdir>");
-        }
+        emit(json, "overview", subject, &paged, "entries", NARROW_SUBDIR)
     }
-
-    0
 }
 
 fn read_body(root: &Path, file: &Path, byte_range: (usize, usize)) -> Option<(String, usize)> {
@@ -878,7 +914,7 @@ fn display_path(path: &Path) -> String {
 fn resolve_file_filter<'a>(
     rel: &Path,
     index: &'a Index,
-) -> Result<Vec<(&'a PathBuf, &'a FileData)>, i32> {
+) -> Result<Vec<(&'a PathBuf, &'a FileData)>, QueryFailure> {
     if let Some(kv) = index.entries.get_key_value(rel) {
         return Ok(vec![kv]);
     }
@@ -890,18 +926,25 @@ fn resolve_file_filter<'a>(
             .filter(|(path, _)| path.starts_with(rel))
             .collect();
         if matches.is_empty() {
-            eprintln!("cx: no indexed files under {}", display_path(rel));
-            return Err(1);
+            return Err(QueryFailure {
+                code: ErrorCode::NoIndexedFiles,
+                message: format!("no indexed files under {}", display_path(rel)),
+            });
         }
         return Ok(matches);
     }
     if abs.exists() && detect_language(&abs).is_none() {
         let ext = abs.extension().and_then(|e| e.to_str()).unwrap_or("(none)");
-        eprintln!("cx: unsupported file type: .{ext}");
+        Err(QueryFailure {
+            code: ErrorCode::UnsupportedFileType,
+            message: format!("unsupported file type: .{ext}"),
+        })
     } else {
-        eprintln!("cx: file not in index: {}", display_path(rel));
+        Err(QueryFailure {
+            code: ErrorCode::FileNotIndexed,
+            message: format!("file not in index: {}", display_path(rel)),
+        })
     }
-    Err(1)
 }
 
 /// Resolve a user-supplied path to its project-root-relative form.

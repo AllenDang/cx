@@ -233,9 +233,45 @@ Commands have default result limits to keep output bounded: definition shows 3, 
 cx: 3/32 definitions for "OnTypeModel" | --from PATH to narrow | --offset 3 for more | --all
 ```
 
-Use `--offset N` to page forward, `--all` to bypass the limit, or `--limit N` to override the default. Narrowing with `--from` / `--file` / `--kind` is usually better than paging.
+Use `--offset N` to page forward, `--all` to bypass the limit, or `--limit N` to override the default. Narrowing with `--from` / `--file` / `--kind` / `--role` is usually better than paging.
 
-With `--json`, paginated output uses `{total, offset, limit, results: [...]}`. Non-paginated output remains a bare array.
+With `--json`, pagination facts live in `page` and the exact follow-up commands live in `next_queries` (see below). The stderr hint is only printed for TOON output.
+
+## JSON output contract
+
+`--json` always returns one object with the same keys, for every command and every result count -- empty, complete, truncated, or failed:
+
+```json
+{
+  "schema_version": 1,
+  "query": { "kind": "symbols", "subject": "run" },
+  "page": { "total": 12, "offset": 0, "limit": 4, "truncated": true },
+  "results": [ ... ],
+  "warnings": [],
+  "next_queries": [
+    "cx --json symbols --name run --limit 4 --offset 4",
+    "cx --json symbols --name run --all"
+  ],
+  "error": null
+}
+```
+
+- `results`, `warnings` and `next_queries` are always arrays; `error` is always present (`null` on success). Nothing appears or disappears based on result count, so a consumer never branches on key existence.
+- `next_queries` entries are literally runnable -- they are the current invocation with pagination flags rewritten.
+- `warnings` reports facts an agent should not ignore, such as several candidates sharing one symbol name.
+- A successful query with **no** results is `results: []` with `error: null` and exit code 0. That is different from a failure, which sets `error` and exits 1:
+
+```json
+{
+  "error": { "code": "file_not_indexed", "message": "file not in index: src/nope.cpp" }
+}
+```
+
+Error codes: `file_not_indexed`, `unsupported_file_type`, `no_indexed_files`, `grammar_not_installed`.
+
+Exit codes: `0` success (including zero results), `1` query failure, `2` usage error from argument parsing.
+
+Under `--json` the payload is authoritative and cx does not duplicate messages on stderr. Without `--json`, the familiar `cx: ...` notes and pagination hints on stderr are unchanged.
 
 ## How it works
 
@@ -273,7 +309,7 @@ Install with: cx lang add rust typescript
 
 ## Output format
 
-Overview, symbols, and references use [TOON](https://toonformat.dev) -- a token-efficient structured format. Definition uses a plain-text format (metadata header + raw code body) for readability. Use `--json` for JSON on any command.
+Overview, symbols, and references use [TOON](https://toonformat.dev) -- a token-efficient structured format. Definition uses a plain-text format (metadata header + raw code body) for readability. Use `--json` for the versioned JSON envelope on any command (see [JSON output contract](#json-output-contract)).
 
 ## Adding a language
 

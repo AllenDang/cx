@@ -80,8 +80,7 @@ fn cpp_declaration_and_definition_are_machine_distinguishable() {
         &["--json", "definition", "--name", "validate_param", "--all"],
     );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
-    let rows = out.json();
-    let rows = rows.as_array().unwrap();
+    let rows = out.results();
     assert_eq!(
         rows.len(),
         2,
@@ -114,8 +113,7 @@ fn role_filter_selects_declarations_only() {
     let p = fixture_project(CORPUS);
     let out = run_cx(p.path(), &["--json", "symbols", "--role", "declaration", "--all"]);
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
-    let rows = out.json();
-    let rows = rows.as_array().unwrap();
+    let rows = out.results();
 
     // 4 signature-only sites in the C++ header (free function, in-class run,
     // entity_count, constructor), the class-scope `run` declaration in
@@ -160,8 +158,7 @@ fn role_filter_selects_the_implementation_of_a_shared_name() {
         ],
     );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
-    let rows = out.json();
-    let rows = rows.as_array().unwrap();
+    let rows = out.results();
     assert_eq!(rows.len(), 1, "{}", out.stdout);
     assert_eq!(rows[0]["file"].as_str().unwrap(), "src/ecs.cpp");
     assert!(rows[0]["body"].as_str().unwrap().contains("runtime_error"), "{}", out.stdout);
@@ -171,8 +168,7 @@ fn role_filter_selects_the_implementation_of_a_shared_name() {
 fn every_symbol_carries_a_role() {
     let p = fixture_project(CORPUS);
     let out = run_cx(p.path(), &["--json", "symbols", "--all"]);
-    let rows = out.json();
-    let rows = rows.as_array().unwrap();
+    let rows = out.results();
 
     let mut counts = std::collections::BTreeMap::new();
     for row in rows {
@@ -190,8 +186,8 @@ fn markdown_headings_use_the_heading_role() {
     let p = fixture_project(CORPUS);
     let out = run_cx(p.path(), &["--json", "symbols", "--file", "docs/design.md", "--all"]);
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
-    let rows = out.json();
-    for row in rows.as_array().unwrap() {
+    let rows = out.results();
+    for row in &rows {
         assert_eq!(row["role"].as_str().unwrap(), "heading", "{}", out.stdout);
     }
 }
@@ -206,12 +202,11 @@ fn same_name_symbols_in_different_scopes_are_not_qualified() {
     let p = fixture_project(CORPUS);
     let out = run_cx(p.path(), &["--json", "symbols", "--name", "run", "--all"]);
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
-    let rows = out.json();
-    let rows = rows.as_array().unwrap();
+    let rows = out.results();
     assert_eq!(rows.len(), 12, "distinct `run` symbols\n{}", out.stdout);
 
     // Every row is name-only: no qualified_name / scope / owner yet.
-    for row in rows {
+    for row in &rows {
         assert_eq!(row["name"].as_str().unwrap(), "run");
         assert!(row.get("qualified_name").is_none(), "{}", out.stdout);
         assert!(row.get("scope_path").is_none(), "{}", out.stdout);
@@ -266,8 +261,7 @@ fn definition_from_narrows_to_one_scope() {
         ],
     );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
-    let rows = out.json();
-    let rows = rows.as_array().unwrap();
+    let rows = out.results();
     assert_eq!(rows.len(), 1, "{}", out.stdout);
     assert_eq!(rows[0]["file"].as_str().unwrap(), "src/scope_a.cpp");
     assert_eq!(rows[0]["line"].as_u64().unwrap(), 6);
@@ -290,8 +284,7 @@ fn references_are_syntax_filtered_not_text_matched() {
         ],
     );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
-    let rows = out.json();
-    let rows = rows.as_array().unwrap();
+    let rows = out.results();
 
     // 18 identifier occurrences exist; two share src/lib.rs line 18 and are
     // collapsed by the per-line dedup, leaving 17 rows.
@@ -334,8 +327,7 @@ fn references_summary_groups_by_file() {
         &["--json", "references", "--name", "run", "--all"],
     );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
-    let rows = out.json();
-    let rows = rows.as_array().unwrap();
+    let rows = out.results();
     assert_eq!(rows.len(), 9, "files containing references\n{}", out.stdout);
 
     let lib = rows
@@ -347,11 +339,11 @@ fn references_summary_groups_by_file() {
     assert_eq!(lib["callers"].as_str().unwrap(), "run, run_both");
 }
 
-/// KNOWN GAP (roadmap §6.2, flipped by Phase 3): a successful query with zero
-/// results prints nothing on stdout, so `--json` output is not parseable and an
-/// agent cannot distinguish "no results" from "command produced no output".
+/// Phase 3 (roadmap §6.2): a successful query with zero results returns the
+/// standard envelope with an empty `results` array and `error: null`, so an
+/// agent can tell "nothing matched" from "the command failed".
 #[test]
-fn empty_result_currently_emits_no_json_body() {
+fn empty_result_emits_an_envelope_with_zero_results() {
     let p = fixture_project(CORPUS);
     let out = run_cx(
         p.path(),
@@ -365,38 +357,89 @@ fn empty_result_currently_emits_no_json_body() {
         ],
     );
     assert_eq!(out.code, 0, "empty result is not an error");
-    assert_eq!(out.stdout, "", "no JSON body today: {:?}", out.stdout);
-    assert!(out.stderr.contains("no matches"), "stderr: {}", out.stderr);
+
+    let doc = out.json();
+    assert!(doc.is_object(), "{}", out.stdout);
+    assert_eq!(doc["schema_version"].as_u64().unwrap(), 1);
+    assert_eq!(doc["query"]["kind"].as_str().unwrap(), "references");
+    assert_eq!(doc["query"]["subject"].as_str().unwrap(), "run");
+    assert!(doc["results"].as_array().unwrap().is_empty(), "{}", out.stdout);
+    assert_eq!(doc["page"]["total"].as_u64().unwrap(), 0);
+    assert!(!doc["page"]["truncated"].as_bool().unwrap());
+    assert!(doc["error"].is_null(), "zero results is not an error: {}", out.stdout);
+    // In JSON mode the payload is authoritative: no duplicate stderr chatter.
+    assert!(
+        !out.stderr.contains("no matches"),
+        "json mode should not narrate on stderr: {}",
+        out.stderr
+    );
+
+    // TOON mode keeps the human/agent note it always had.
+    let toon = run_cx(
+        p.path(),
+        &["references", "--name", "run", "--file", "src/comments.cpp"],
+    );
+    assert_eq!(toon.code, 0);
+    assert!(toon.stdout.is_empty(), "{}", toon.stdout);
+    assert!(toon.stderr.contains("no matches"), "stderr: {}", toon.stderr);
 }
 
-// --- §6.3 output budget ----------------------------------------------------
+// --- §6.1/§6.3 stable envelope and output budget ----------------------------
 
-/// KNOWN GAP (roadmap §3.4/§6.1, flipped by Phase 3): the JSON root type
-/// changes with result count — bare array when everything fits, envelope object
-/// once truncated or offset.
+/// Phase 3 (roadmap §3.4, §6.1): the JSON root is always the same object, with
+/// the same key set, whether the result set is complete, truncated, or offset.
 #[test]
-fn json_root_type_changes_with_pagination() {
+fn json_root_type_is_stable_across_pagination() {
     let p = fixture_project(CORPUS);
 
+    let expected_keys = vec![
+        "error",
+        "next_queries",
+        "page",
+        "query",
+        "results",
+        "schema_version",
+        "warnings",
+    ];
+    let keys_of = |doc: &serde_json::Value| -> Vec<String> {
+        let mut keys: Vec<String> = doc.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        keys
+    };
+
     let unpaged = run_cx(p.path(), &["--json", "symbols", "--name", "run", "--all"]);
-    assert!(unpaged.json().is_array(), "{}", unpaged.stdout);
+    let doc = unpaged.json();
+    assert!(doc.is_object(), "{}", unpaged.stdout);
+    assert_eq!(keys_of(&doc), expected_keys, "{}", unpaged.stdout);
+    assert_eq!(doc["page"]["total"].as_u64().unwrap(), 12);
+    assert!(!doc["page"]["truncated"].as_bool().unwrap());
+    assert!(doc["page"]["limit"].is_null(), "--all means no limit");
+    assert!(doc["next_queries"].as_array().unwrap().is_empty());
 
     let truncated = run_cx(
         p.path(),
         &["--json", "symbols", "--name", "run", "--limit", "4"],
     );
-    let env = truncated.json();
-    assert!(env.is_object(), "{}", truncated.stdout);
-    assert_eq!(env["total"].as_u64().unwrap(), 12);
-    assert_eq!(env["offset"].as_u64().unwrap(), 0);
-    assert_eq!(env["limit"].as_u64().unwrap(), 4);
-    assert_eq!(env["results"].as_array().unwrap().len(), 4);
-    // Truncation is only visible on stderr, not in the payload.
-    assert!(env.get("truncated").is_none(), "{}", truncated.stdout);
+    let doc = truncated.json();
+    assert_eq!(keys_of(&doc), expected_keys, "{}", truncated.stdout);
+    assert_eq!(doc["page"]["total"].as_u64().unwrap(), 12);
+    assert_eq!(doc["page"]["offset"].as_u64().unwrap(), 0);
+    assert_eq!(doc["page"]["limit"].as_u64().unwrap(), 4);
+    assert_eq!(doc["results"].as_array().unwrap().len(), 4);
+    // Truncation is now a payload fact, not a stderr-only hint.
+    assert!(doc["page"]["truncated"].as_bool().unwrap());
     assert!(
-        truncated.stderr.contains("4/12"),
-        "expected pagination hint on stderr: {}",
+        !truncated.stderr.contains("4/12"),
+        "json mode carries pagination in the payload, not on stderr: {}",
         truncated.stderr
+    );
+
+    // The stderr hint remains for TOON output.
+    let toon = run_cx(p.path(), &["symbols", "--name", "run", "--limit", "4"]);
+    assert!(
+        toon.stderr.contains("4/12"),
+        "toon keeps the stderr hint: {}",
+        toon.stderr
     );
 
     let offset = run_cx(
@@ -405,14 +448,84 @@ fn json_root_type_changes_with_pagination() {
             "--json", "symbols", "--name", "run", "--offset", "10", "--all",
         ],
     );
-    let env = offset.json();
-    assert!(
-        env.is_object(),
-        "offset alone also switches root type: {}",
-        offset.stdout
+    let doc = offset.json();
+    assert_eq!(keys_of(&doc), expected_keys, "{}", offset.stdout);
+    assert_eq!(doc["page"]["total"].as_u64().unwrap(), 12);
+    assert_eq!(doc["page"]["offset"].as_u64().unwrap(), 10);
+    assert_eq!(doc["results"].as_array().unwrap().len(), 2);
+    assert!(!doc["page"]["truncated"].as_bool().unwrap());
+}
+
+/// Phase 3 (roadmap §6.3): a truncated page carries exact, runnable follow-up
+/// commands rather than a prose hint.
+#[test]
+fn truncated_page_suggests_runnable_next_queries() {
+    let p = fixture_project(CORPUS);
+    let out = run_cx(
+        p.path(),
+        &["--json", "symbols", "--name", "run", "--limit", "4"],
     );
-    assert_eq!(env["total"].as_u64().unwrap(), 12);
-    assert_eq!(env["results"].as_array().unwrap().len(), 2);
+    let doc = out.json();
+    let next: Vec<&str> = doc["next_queries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        next,
+        vec![
+            "cx --json symbols --name run --limit 4 --offset 4",
+            "cx --json symbols --name run --all",
+        ],
+        "{}",
+        out.stdout
+    );
+
+    // Run the suggested next page verbatim (minus the binary name) and check it
+    // returns exactly the rows this page omitted.
+    let follow_up = run_cx(
+        p.path(),
+        &[
+            "--json", "symbols", "--name", "run", "--limit", "4", "--offset", "4",
+        ],
+    );
+    assert_eq!(follow_up.code, 0, "stderr: {}", follow_up.stderr);
+    assert_eq!(follow_up.page()["offset"].as_u64().unwrap(), 4);
+    assert_eq!(follow_up.json_len(), 4);
+}
+
+/// Phase 3 (roadmap §6.2): several candidates for one name is an ambiguity that
+/// must be reported, not silently resolved by picking the first.
+#[test]
+fn ambiguous_definition_reports_a_warning() {
+    let p = fixture_project(CORPUS);
+    let out = run_cx(p.path(), &["--json", "definition", "--name", "run", "--all"]);
+    let doc = out.json();
+    let warnings: Vec<&str> = doc["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(warnings.len(), 1, "{}", out.stdout);
+    assert!(
+        warnings[0].starts_with("12 candidates share the name \"run\""),
+        "{}",
+        warnings[0]
+    );
+
+    // A single unambiguous match carries no warning.
+    let single = run_cx(
+        p.path(),
+        &["--json", "definition", "--name", "run_all", "--all"],
+    );
+    assert_eq!(single.json_len(), 1, "{}", single.stdout);
+    assert!(
+        single.json()["warnings"].as_array().unwrap().is_empty(),
+        "{}",
+        single.stdout
+    );
 }
 
 #[test]
@@ -503,10 +616,8 @@ fn renamed_file_moves_its_symbols() {
     support::touch_future(&to);
 
     let out = run_cx(p.path(), &["--json", "symbols", "--name", "run", "--all"]);
-    let rows = out.json();
+    let rows = out.results();
     let files: Vec<&str> = rows
-        .as_array()
-        .unwrap()
         .iter()
         .map(|r| r["file"].as_str().unwrap())
         .collect();
@@ -533,15 +644,27 @@ fn freshness_is_not_observable_in_output() {
 // --- Error surfaces --------------------------------------------------------
 
 #[test]
-fn unindexed_file_filter_exits_1() {
+fn unindexed_file_filter_reports_a_machine_readable_code() {
     let p = fixture_project(CORPUS);
     let out = run_cx(p.path(), &["--json", "symbols", "--file", "src/nope.cpp"]);
     assert_eq!(out.code, 1);
-    assert!(out.stdout.is_empty(), "{}", out.stdout);
+
+    // Phase 3: the failure is in the payload, not only on stderr.
+    let doc = out.json();
+    assert_eq!(out.error_code().as_deref(), Some("file_not_indexed"), "{}", out.stdout);
+    assert_eq!(
+        doc["error"]["message"].as_str().unwrap(),
+        "file not in index: src/nope.cpp"
+    );
+    assert!(doc["results"].as_array().unwrap().is_empty(), "{}", out.stdout);
+
+    // Without --json the same failure is reported on stderr as before.
+    let toon = run_cx(p.path(), &["symbols", "--file", "src/nope.cpp"]);
+    assert_eq!(toon.code, 1);
     assert!(
-        out.stderr.contains("file not in index"),
+        toon.stderr.contains("file not in index"),
         "stderr: {}",
-        out.stderr
+        toon.stderr
     );
 }
 
@@ -554,9 +677,33 @@ fn unsupported_file_type_reports_extension() {
         &["--json", "symbols", "--file", "notes.unknownext"],
     );
     assert_eq!(out.code, 1);
+    assert_eq!(
+        out.error_code().as_deref(),
+        Some("unsupported_file_type"),
+        "{}",
+        out.stdout
+    );
+
+    let toon = run_cx(p.path(), &["symbols", "--file", "notes.unknownext"]);
     assert!(
-        out.stderr.contains("unsupported file type: .unknownext"),
+        toon.stderr.contains("unsupported file type: .unknownext"),
         "stderr: {}",
-        out.stderr
+        toon.stderr
+    );
+}
+
+/// Phase 3 (roadmap §6.2): a directory scope with no indexed files is an error
+/// with its own code, distinct from a query that simply matched nothing.
+#[test]
+fn empty_directory_scope_is_an_error_not_an_empty_result() {
+    let p = fixture_project(CORPUS);
+    std::fs::create_dir_all(p.path().join("empty_dir")).unwrap();
+    let out = run_cx(p.path(), &["--json", "overview", "empty_dir"]);
+    assert_eq!(out.code, 1);
+    assert_eq!(
+        out.error_code().as_deref(),
+        Some("no_indexed_files"),
+        "{}",
+        out.stdout
     );
 }
