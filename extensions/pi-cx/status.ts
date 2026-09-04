@@ -6,7 +6,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { BINARY_PATH, PACKAGE_ROOT, loadAssetManifest, sha256File, validateBundledBinary } from "./binary.js";
 import { canonicalRoot } from "./paths.js";
 import { cxCacheDir, grammarStatus } from "./grammars.js";
-import { CX_SCHEMA_VERSION, PACKAGE_VERSION, TARGET } from "./types.js";
+import { CX_SCHEMA_VERSION, PACKAGE_VERSION, PLATFORM, TARGET } from "./types.js";
 
 async function capture(binary: string, args: string[], cwd: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -17,13 +17,13 @@ async function capture(binary: string, args: string[], cwd: string): Promise<str
 
 export async function buildStatusReport(cwd: string): Promise<{ ok: boolean; text: string }> {
   const lines = [`pi-cx ${PACKAGE_VERSION}`, `package root: ${PACKAGE_ROOT}`, `target: ${TARGET}`, `host: ${process.platform}/${process.arch}`, `binary: ${BINARY_PATH}`, `expected schema: ${CX_SCHEMA_VERSION}`];
-  let ok = process.platform === "darwin" && process.arch === "arm64";
-  if (!ok) lines.push("FAIL platform: only darwin/arm64 is supported; PATH cx fallback is disabled");
+  let ok = ["darwin", "linux", "win32"].includes(process.platform) && ["arm64", "x64"].includes(process.arch);
+  if (!ok) lines.push("FAIL platform: supported hosts are macOS/Linux/Windows on arm64 or x64; PATH cx fallback is disabled");
   let manifest;
   try {
     manifest = await loadAssetManifest();
     const digest = await sha256File(BINARY_PATH);
-    lines.push(`binary digest: ${digest === manifest.files["bin/cx"]?.sha256 ? "OK" : "FAIL"} (${digest})`);
+    lines.push(`binary digest: ${digest === manifest.files[`bin/${PLATFORM.binaryName}`]?.sha256 ? "OK" : "FAIL"} (${digest})`);
     const validation = await validateBundledBinary();
     lines.push(`cx version: ${validation.version}`, `probe schema: ${CX_SCHEMA_VERSION} (OK)`);
   } catch (error) { ok = false; lines.push(`FAIL binary/manifest/probe: ${error instanceof Error ? error.message : String(error)}`); }

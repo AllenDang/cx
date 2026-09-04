@@ -1,9 +1,11 @@
 # pi-cx Extension 集成开发计划
 
-> 状态：设计已确认，等待实现
+> 状态：已实现；跨平台修订见下方
 > cx 基线：`0e853f33438b669697d9a5bcee019d13919bf147` 之后已通过完整验收的主线
 > Pi API 基线：`@earendil-works/pi-coding-agent` extension/package API
-> 目标平台：第一版仅 `darwin-arm64`
+> 目标平台：macOS、Linux、Windows 的 arm64/x86_64
+>
+> **0.7.3 修订：** 本文中所有“第一版仅 darwin-arm64”、单一 `darwin-arm64` vendor 目录和单一 Pi asset 的描述，均由 0.7.3 的六目标矩阵取代。每个 Rust release target 都发布独立的 `pi-cx-<target>.tar.gz`，包含该目标的 cx binary 和 language-pack 1.16.1 grammars。Release CI 不再发布 crates.io 或更新 Homebrew。
 
 ## 1. 目标
 

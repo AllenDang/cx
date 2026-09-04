@@ -30,7 +30,7 @@ export async function runCxMaintenance(binary: string, cwd: string, args: string
   const child = spawn(binary, args, { cwd, env: limitedEnvironment(), shell: false, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
   let stderr = "";
   child.stderr.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString("utf8")).slice(-MAX_STDERR_BYTES); });
-  const terminate = () => { try { process.kill(process.platform === "win32" ? child.pid! : -child.pid!, "SIGTERM"); } catch { child.kill("SIGTERM"); } };
+  const terminate = () => terminateProcessTree(child);
   const onAbort = () => terminate();
   signal?.addEventListener("abort", onAbort, { once: true });
   const timer = setTimeout(terminate, timeoutMs); timer.unref();
@@ -38,6 +38,16 @@ export async function runCxMaintenance(binary: string, cwd: string, args: string
     .finally(() => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); });
   if (signal?.aborted) throw new CxProcessError("cx grammar installation cancelled");
   if (code !== 0) throw new CxProcessError(`cx grammar installation failed (${String(code)}): ${stderr}`);
+}
+
+function terminateProcessTree(child: ReturnType<typeof spawn>, force = false): void {
+  if (!child.pid || child.exitCode !== null) return;
+  if (process.platform === "win32") {
+    const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore", shell: false });
+    killer.unref();
+    return;
+  }
+  try { process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM"); } catch { child.kill(force ? "SIGKILL" : "SIGTERM"); }
 }
 
 function limitedEnvironment(): NodeJS.ProcessEnv {
@@ -89,11 +99,9 @@ export async function runCx(options: RunCxOptions): Promise<CxRunResult> {
   });
 
   const terminate = () => {
-    if (child.exitCode !== null || child.killed) return;
-    try { process.kill(process.platform === "win32" ? child.pid! : -child.pid!, "SIGTERM"); } catch { child.kill("SIGTERM"); }
-    setTimeout(() => {
-      if (child.exitCode === null) try { process.kill(process.platform === "win32" ? child.pid! : -child.pid!, "SIGKILL"); } catch { child.kill("SIGKILL"); }
-    }, 1000).unref();
+    if (child.exitCode !== null) return;
+    terminateProcessTree(child);
+    setTimeout(() => { if (child.exitCode === null) terminateProcessTree(child, true); }, 1000).unref();
   };
   const abortHandler = () => { aborted = true; terminate(); };
   options.signal?.addEventListener("abort", abortHandler, { once: true });

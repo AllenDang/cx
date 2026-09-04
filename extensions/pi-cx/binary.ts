@@ -6,11 +6,11 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { parseEnvelope, validateManifest } from "./protocol.js";
-import { PACKAGE_VERSION, PLATFORM_DIR, type AssetManifest } from "./types.js";
+import { PACKAGE_VERSION, PLATFORM, PLATFORM_DIR, type AssetManifest } from "./types.js";
 
 export const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const VENDOR_ROOT = join(PACKAGE_ROOT, "vendor", "pi-cx", PLATFORM_DIR);
-export const BINARY_PATH = join(VENDOR_ROOT, "bin", "cx");
+export const BINARY_PATH = join(VENDOR_ROOT, "bin", PLATFORM.binaryName);
 export const MANIFEST_PATH = join(VENDOR_ROOT, "manifest.json");
 
 export async function sha256File(path: string): Promise<string> {
@@ -50,9 +50,10 @@ async function validateBundledBinaryUncached(options: { binary?: string; manifes
   if (rel.startsWith("..") || rel === "") throw new Error("bundled cx realpath escapes vendor root; reinstall pi-cx");
   await access(actual, constants.X_OK);
   const manifest = await loadAssetManifest(manifestPath);
+  const binaryManifestPath = `bin/${PLATFORM.binaryName}`;
   const digest = await sha256File(actual);
-  if (digest !== manifest.files["bin/cx"]!.sha256) throw new Error("bundled cx checksum mismatch; reinstall pi-cx");
-  if ((await stat(actual)).size !== manifest.files["bin/cx"]!.bytes) throw new Error("bundled cx size mismatch; reinstall pi-cx");
+  if (digest !== manifest.files[binaryManifestPath]!.sha256) throw new Error("bundled cx checksum mismatch; reinstall pi-cx");
+  if ((await stat(actual)).size !== manifest.files[binaryManifestPath]!.bytes) throw new Error("bundled cx size mismatch; reinstall pi-cx");
   const versionResult = await execCapture(actual, ["--version"], vendorRoot);
   const expected = PACKAGE_VERSION;
   const version = versionResult.stdout.trim().match(/\b(\d+\.\d+\.\d+)\b/)?.[1];

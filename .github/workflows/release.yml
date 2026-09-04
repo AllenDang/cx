@@ -52,41 +52,34 @@ jobs:
         shell: pwsh
         run: |
           Compress-Archive -Path "target/${{ matrix.target }}/release/cx.exe" -DestinationPath "cx-${{ matrix.target }}.zip"
+      - name: Build Pi package asset
+        shell: bash
+        run: |
+          binary="target/${{ matrix.target }}/release/cx"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then binary="${binary}.exe"; fi
+          node scripts/build-pi-cx-asset.mjs "${{ matrix.target }}" "$binary" "$PWD"
       - uses: actions/upload-artifact@v4
         with:
           name: cx-${{ matrix.target }}
-          path: cx-${{ matrix.target }}.*
+          path: |
+            cx-${{ matrix.target }}.*
+            pi-cx-${{ matrix.target }}.tar.gz
+            pi-cx-${{ matrix.target }}.tar.gz.sha256
 
-  pi-extension-build-asset-darwin-arm64:
-    runs-on: macos-latest
+  pi-extension-unit:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
       - run: npm ci --ignore-scripts
-      - run: npm run typecheck:pi && npm run test:pi
-      - run: cargo build --release --target aarch64-apple-darwin
-      - name: Build and verify staged Pi asset
-        shell: bash
-        run: |
-          ./scripts/build-pi-cx-asset.sh
-          mkdir -p /tmp/pi-cx-stage
-          tar -xzf dist/pi-cx-aarch64-apple-darwin.tar.gz -C /tmp/pi-cx-stage
-          PI_CX_ASSET_DIR=/tmp/pi-cx-stage node scripts/install-pi-cx.mjs
-          npm run verify:pi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: pi-cx-aarch64-apple-darwin
-          path: dist/pi-cx-aarch64-apple-darwin.tar.gz*
+      - run: npm run typecheck:pi
+      - run: npm run test:pi
 
   release:
-    needs: [build, pi-extension-build-asset-darwin-arm64]
+    needs: [build, pi-extension-unit]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -99,100 +92,5 @@ jobs:
           files: |
             cx-*.tar.gz
             cx-*.zip
-            pi-cx-aarch64-apple-darwin.tar.gz
-            pi-cx-aarch64-apple-darwin.tar.gz.sha256
-
-  publish-crate:
-    needs: release
-    runs-on: ubuntu-latest
-    environment: crates-io
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Authenticate with crates.io
-        uses: rust-lang/crates-io-auth-action@v1
-        id: auth
-      - run: cargo publish
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-
-  update-homebrew:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Get version and compute SHA256s
-        id: info
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          BASE="https://github.com/ind-igo/cx/releases/download/${GITHUB_REF_NAME}"
-          for pair in \
-            "arm:cx-aarch64-apple-darwin.tar.gz" \
-            "x86:cx-x86_64-apple-darwin.tar.gz" \
-            "linux:cx-x86_64-unknown-linux-gnu.tar.gz" \
-            "linux_arm:cx-aarch64-unknown-linux-gnu.tar.gz"; do
-            key="${pair%%:*}"
-            file="${pair#*:}"
-            curl -sLf -o "/tmp/${file}" "${BASE}/${file}"
-            sha=$(sha256sum "/tmp/${file}" | cut -d' ' -f1)
-            echo "${key}_sha=$sha" >> "$GITHUB_OUTPUT"
-          done
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-      - name: Update Homebrew tap
-        env:
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          VERSION="${{ steps.info.outputs.version }}"
-          TAG="${GITHUB_REF_NAME}"
-          ARM_SHA="${{ steps.info.outputs.arm_sha }}"
-          X86_SHA="${{ steps.info.outputs.x86_sha }}"
-          LINUX_SHA="${{ steps.info.outputs.linux_sha }}"
-          LINUX_ARM_SHA="${{ steps.info.outputs.linux_arm_sha }}"
-          BASE="https://github.com/ind-igo/cx/releases/download/${TAG}"
-
-          git clone https://x-access-token:${TAP_TOKEN}@github.com/ind-igo/homebrew-cx.git
-          cd homebrew-cx
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          printf '%s\n' \
-            'class Cx < Formula' \
-            '  desc "Semantic code navigation for AI agents"' \
-            '  homepage "https://github.com/ind-igo/cx"' \
-            "  version \"${VERSION}\"" \
-            '  license "MIT"' \
-            '' \
-            '  on_macos do' \
-            '    if Hardware::CPU.arm?' \
-            "      url \"${BASE}/cx-aarch64-apple-darwin.tar.gz\"" \
-            "      sha256 \"${ARM_SHA}\"" \
-            '    else' \
-            "      url \"${BASE}/cx-x86_64-apple-darwin.tar.gz\"" \
-            "      sha256 \"${X86_SHA}\"" \
-            '    end' \
-            '  end' \
-            '' \
-            '  on_linux do' \
-            '    if Hardware::CPU.arm?' \
-            "      url \"${BASE}/cx-aarch64-unknown-linux-gnu.tar.gz\"" \
-            "      sha256 \"${LINUX_ARM_SHA}\"" \
-            '    else' \
-            "      url \"${BASE}/cx-x86_64-unknown-linux-gnu.tar.gz\"" \
-            "      sha256 \"${LINUX_SHA}\"" \
-            '    end' \
-            '  end' \
-            '' \
-            '  def install' \
-            '    bin.install "cx"' \
-            '  end' \
-            '' \
-            '  test do' \
-            '    assert_match version.to_s, shell_output("#{bin}/cx --version")' \
-            '  end' \
-            'end' > Formula/cx.rb
-
-          git add Formula/cx.rb
-          git diff --staged --quiet && exit 0
-          git commit -m "cx ${VERSION}"
-          git push
+            pi-cx-*.tar.gz
+            pi-cx-*.tar.gz.sha256

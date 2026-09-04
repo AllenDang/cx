@@ -5,10 +5,10 @@
 ## Install
 
 ```bash
-pi install git:github.com/AllenDang/cx@v0.7.2
+pi install git:github.com/AllenDang/cx@v0.7.3
 ```
 
-The first release supports **macOS arm64 only**. Installation downloads the asset for the package's exact version, verifies the archive and every manifest file, then installs it under `vendor/pi-cx/darwin-arm64`. Installation runs native code verification and requires network access. Review package source before installation.
+The package supports macOS, Linux, and Windows on arm64 and x86_64. Installation selects the asset matching the current OS and architecture, verifies the archive and every manifest file, then installs it under a platform-specific `vendor/pi-cx/<platform>-<arch>` directory. Installation runs native code verification and requires network access. Review package source before installation.
 
 ## Tools
 
@@ -33,7 +33,7 @@ pi-cx shares cx's standard cache (`~/Library/Caches/cx` on macOS), including ind
 
 Run `/cx-status` for a read-only report. It does not seed grammars, download files, or index the current project.
 
-- **unsupported platform**: use darwin/arm64; another architecture is not selected automatically.
+- **unsupported platform**: use macOS, Linux, or Windows on arm64/x86_64; another architecture is not selected automatically.
 - **checksum or binary version failure**: remove and reinstall the exact tagged package. PATH fallback is deliberately disabled.
 - **schema mismatch**: install the package tag matching the bundled cx release.
 - **grammar missing**: confirm `cx lang add <language>` in an interactive session, or run the reported bundled-binary command yourself.

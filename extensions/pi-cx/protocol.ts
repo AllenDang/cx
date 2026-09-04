@@ -1,7 +1,8 @@
 import type { AssetManifest, CxEnvelope } from "./types.js";
+import { grammarFilename } from "./platform.js";
 import {
   ASSET_FORMAT_VERSION, BUNDLED_LANGUAGES, CX_SCHEMA_VERSION, GRAMMAR_NAMES, LANGUAGE_PACK_VERSION,
-  PACKAGE_NAME, PACKAGE_VERSION, TARGET,
+  PACKAGE_NAME, PACKAGE_VERSION, PLATFORM, TARGET,
 } from "./types.js";
 
 export class ProtocolError extends Error {
@@ -38,8 +39,9 @@ export function validateManifest(value: unknown): AssetManifest {
   if (m.target !== TARGET) failures.push(`target=${m.target}`);
   if (m.tree_sitter_language_pack_version !== LANGUAGE_PACK_VERSION) failures.push(`language_pack=${m.tree_sitter_language_pack_version}`);
   if (!Array.isArray(m.languages) || BUNDLED_LANGUAGES.some((lang) => !m.languages.includes(lang))) failures.push("languages incomplete");
-  if (!m.files || typeof m.files !== "object" || !m.files["bin/cx"]) failures.push("files missing bin/cx");
-  const expectedFiles = new Set(["bin/cx", ...GRAMMAR_NAMES.map((name) => `grammars/libtree_sitter_${name}.dylib`)]);
+  const binaryPath = `bin/${PLATFORM.binaryName}`;
+  if (!m.files || typeof m.files !== "object" || !m.files[binaryPath]) failures.push(`files missing ${binaryPath}`);
+  const expectedFiles = new Set([binaryPath, ...GRAMMAR_NAMES.map((name) => `grammars/${grammarFilename(name)}`)]);
   for (const path of Object.keys(m.files ?? {})) if (!expectedFiles.has(path)) failures.push(`unexpected file ${path}`);
   for (const path of expectedFiles) if (!m.files?.[path]) failures.push(`missing file ${path}`);
   for (const [path, entry] of Object.entries(m.files ?? {})) {

@@ -1,10 +1,13 @@
+import { currentPlatformConfig } from "./platform.js";
+
 export const PACKAGE_NAME = "pi-cx";
-export const PACKAGE_VERSION = "0.7.2";
+export const PACKAGE_VERSION = "0.7.3";
 export const CX_SCHEMA_VERSION = 1;
 export const ASSET_FORMAT_VERSION = 1;
-export const LANGUAGE_PACK_VERSION = "1.3.1";
-export const TARGET = "aarch64-apple-darwin";
-export const PLATFORM_DIR = "darwin-arm64";
+export const LANGUAGE_PACK_VERSION = "1.16.1";
+export const PLATFORM = currentPlatformConfig();
+export const TARGET = PLATFORM.target;
+export const PLATFORM_DIR = PLATFORM.platformDir;
 
 export const BUNDLED_LANGUAGES = [
   "rust", "c", "cpp", "javascript", "jsx", "typescript", "tsx", "python", "go",

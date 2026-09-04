@@ -1,6 +1,6 @@
 {
   "name": "pi-cx",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "private": true,
   "type": "module",
   "keywords": ["pi-package", "code-navigation", "tree-sitter", "ai-agents"],
@@ -9,6 +9,7 @@
   },
   "scripts": {
     "postinstall": "node ./scripts/install-pi-cx.mjs",
+    "build:pi-asset": "node ./scripts/build-pi-cx-asset.mjs",
     "test:pi": "tsx --test ./tests/pi-extension/*.test.ts",
     "verify:pi": "node ./scripts/verify-pi-cx-package.mjs",
     "typecheck:pi": "tsc --noEmit"

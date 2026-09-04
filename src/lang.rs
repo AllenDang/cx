@@ -121,7 +121,7 @@ pub fn list() -> i32 {
         println!("{lang:<15} {marker}");
     }
     eprintln!(
-        "\nNeed another language? Open an issue: https://github.com/ind-igo/cx/issues/new?template=language-request.yml"
+        "\nNeed another language? Open an issue: https://github.com/AllenDang/cx/issues/new?template=language-request.yml"
     );
     0
 }

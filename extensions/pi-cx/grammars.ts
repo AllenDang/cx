@@ -7,7 +7,9 @@ import { VENDOR_ROOT, sha256File } from "./binary.js";
 
 export function cxCacheDir(): string {
   if (process.env.CX_CACHE_DIR) return process.env.CX_CACHE_DIR;
-  return process.platform === "darwin" ? join(homedir(), "Library", "Caches", "cx") : join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "cx");
+  if (process.platform === "darwin") return join(homedir(), "Library", "Caches", "cx");
+  if (process.platform === "win32") return join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "cx");
+  return join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "cx");
 }
 
 async function acquireLock(lock: string): Promise<() => Promise<void>> {
@@ -28,7 +30,7 @@ async function acquireLock(lock: string): Promise<() => Promise<void>> {
 export interface GrammarSeedResult { copied: string[]; replaced: string[]; unchanged: string[] }
 
 export async function ensureBundledGrammars(manifest: AssetManifest, vendorRoot = VENDOR_ROOT, cache = cxCacheDir()): Promise<GrammarSeedResult> {
-  const grammarEntries = Object.entries(manifest.files).filter(([path]) => path.startsWith("grammars/") && path.endsWith(".dylib"));
+  const grammarEntries = Object.entries(manifest.files).filter(([path]) => path.startsWith("grammars/") && /\.(dylib|so|dll)$/.test(path));
   if (!grammarEntries.length) throw new Error("pi-cx asset manifest contains no bundled grammars");
   const targetDir = join(cache, "grammars");
   await mkdir(targetDir, { recursive: true });

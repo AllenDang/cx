@@ -6,13 +6,13 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
+import { byHost, grammarFilename, grammarNames, languagePackVersion } from "./pi-cx-platforms.mjs";
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
-const target = "aarch64-apple-darwin", platformDir = "darwin-arm64", schema = 1, languagePack = "1.3.1";
-const asset = "pi-cx-aarch64-apple-darwin.tar.gz";
-if (process.platform !== "darwin" || process.arch !== "arm64") {
-  throw new Error(`pi-cx does not support ${process.platform}/${process.arch}. Version ${pkg.version} supports only darwin/arm64. PATH cx fallback and cross-architecture installation are disabled.`);
-}
+const config = byHost();
+const target = config.target, platformDir = config.platformDir, schema = 1;
+const asset = `pi-cx-${target}.tar.gz`;
 const digest = async (path) => createHash("sha256").update(await readFile(path)).digest("hex");
 const exec = (command, args, cwd) => new Promise((resolve, reject) => {
   const child = spawn(command, args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"] }); const out = [], err = [];
@@ -36,9 +36,10 @@ async function validate(stage) {
   if (manifest.cx_version !== pkg.version) failures.push("cx_version");
   if (manifest.cx_schema_version !== schema) failures.push("cx_schema_version");
   if (manifest.target !== target) failures.push("target");
-  if (manifest.tree_sitter_language_pack_version !== languagePack) failures.push("language_pack");
-  if (!manifest.files?.["bin/cx"]) failures.push("bin/cx");
-  const expectedNative = new Set(["bin/cx", ...["rust", "typescript", "tsx", "python", "go", "c", "cpp"].map(name => `grammars/libtree_sitter_${name}.dylib`)]);
+  if (manifest.tree_sitter_language_pack_version !== languagePackVersion) failures.push("language_pack");
+  const binaryPath = `bin/${config.binaryName}`;
+  if (!manifest.files?.[binaryPath]) failures.push(binaryPath);
+  const expectedNative = new Set([binaryPath, ...grammarNames.map(name => `grammars/${grammarFilename(name, config)}`)]);
   for (const path of Object.keys(manifest.files ?? {})) if (!expectedNative.has(path)) failures.push(`unexpected file ${path}`);
   for (const path of expectedNative) if (!manifest.files?.[path]) failures.push(`missing file ${path}`);
   if (failures.length) throw new Error(`incompatible pi-cx manifest: ${failures.join(", ")}`);
@@ -51,8 +52,8 @@ async function validate(stage) {
     const full = join(stage, path), info = await stat(full);
     if (info.size !== meta.bytes || await digest(full) !== meta.sha256) throw new Error(`asset checksum/size mismatch: ${path}`);
   }
-  await chmod(join(stage, "bin/cx"), 0o755);
-  const version = await exec(join(stage, "bin/cx"), ["--version"], stage);
+  if (config.platform !== "win32") await chmod(join(stage, binaryPath), 0o755);
+  const version = await exec(join(stage, binaryPath), ["--version"], stage);
   if (!new RegExp(`\\b${pkg.version.replaceAll(".", "\\.")}\\b`).test(version)) throw new Error(`cx --version mismatch: ${version.trim()}`);
 }
 const work = await mkdtemp(join(root, ".pi-cx-install-"));
