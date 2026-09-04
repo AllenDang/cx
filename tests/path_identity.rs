@@ -39,12 +39,10 @@ fn aliased_project() -> (PathBuf, PathBuf, (tempfile::TempDir, tempfile::TempDir
 }
 
 fn cache_path(root: &Path) -> String {
-    let out = cx_in(Path::new("/")).args([
-        "--root",
-        root.to_str().unwrap(),
-        "cache",
-        "path",
-    ]).output().unwrap();
+    let out = cx_in(Path::new("/"))
+        .args(["--root", root.to_str().unwrap(), "cache", "path"])
+        .output()
+        .unwrap();
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -62,18 +60,31 @@ fn aliased_roots_share_one_cache_file() {
 fn index_built_under_alias_is_reused_under_real_root() {
     let (real, alias, _keep) = aliased_project();
 
-    let build = run_cx(&alias, &["--root", alias.to_str().unwrap(), "symbols", "--all"]);
+    let build = run_cx(
+        &alias,
+        &["--root", alias.to_str().unwrap(), "symbols", "--all"],
+    );
     assert_eq!(build.code, 0, "stderr: {}", build.stderr);
-    assert!(build.stderr.contains("indexing"), "first run must build: {}", build.stderr);
+    assert!(
+        build.stderr.contains("indexing"),
+        "first run must build: {}",
+        build.stderr
+    );
 
-    let reuse = run_cx(&real, &["--root", real.to_str().unwrap(), "symbols", "--all"]);
+    let reuse = run_cx(
+        &real,
+        &["--root", real.to_str().unwrap(), "symbols", "--all"],
+    );
     assert_eq!(reuse.code, 0, "stderr: {}", reuse.stderr);
     assert!(
         !reuse.stderr.contains("indexing") && !reuse.stderr.contains("updating"),
         "alias and real root must share one fresh index, got: {}",
         reuse.stderr
     );
-    assert_eq!(build.stdout, reuse.stdout, "identical results in both spellings");
+    assert_eq!(
+        build.stdout, reuse.stdout,
+        "identical results in both spellings"
+    );
 }
 
 #[test]
@@ -81,7 +92,10 @@ fn absolute_path_argument_in_the_other_spelling_resolves() {
     let (real, alias, _keep) = aliased_project();
 
     // Build under the alias, then query using a canonical absolute file path.
-    let _ = run_cx(&alias, &["--root", alias.to_str().unwrap(), "symbols", "--all"]);
+    let _ = run_cx(
+        &alias,
+        &["--root", alias.to_str().unwrap(), "symbols", "--all"],
+    );
 
     let real_file = real.join("src/a.rs");
     let out = run_cx(
@@ -124,7 +138,10 @@ fn absolute_path_argument_in_the_other_spelling_resolves() {
 #[test]
 fn path_filters_accept_either_spelling() {
     let (real, alias, _keep) = aliased_project();
-    let _ = run_cx(&alias, &["--root", alias.to_str().unwrap(), "symbols", "--all"]);
+    let _ = run_cx(
+        &alias,
+        &["--root", alias.to_str().unwrap(), "symbols", "--all"],
+    );
 
     let file = real.join("src/a.rs");
     for (root, label) in [(&alias, "alias root"), (&real, "real root")] {
@@ -167,7 +184,16 @@ fn path_filters_accept_either_spelling() {
 fn results_use_root_relative_paths_regardless_of_spelling() {
     let (real, alias, _keep) = aliased_project();
     for root in [&alias, &real] {
-        let out = run_cx(root, &["--root", root.to_str().unwrap(), "--json", "symbols", "--all"]);
+        let out = run_cx(
+            root,
+            &[
+                "--root",
+                root.to_str().unwrap(),
+                "--json",
+                "symbols",
+                "--all",
+            ],
+        );
         assert_eq!(out.code, 0, "stderr: {}", out.stderr);
         let rows = out.json();
         for row in rows.as_array().unwrap() {
@@ -182,7 +208,8 @@ fn missing_file_error_reports_a_root_relative_path() {
     let out = run_cx(p.path(), &["symbols", "--file", "src/does_not_exist.cpp"]);
     assert_eq!(out.code, 1);
     assert!(
-        out.stderr.contains("file not in index: src/does_not_exist.cpp"),
+        out.stderr
+            .contains("file not in index: src/does_not_exist.cpp"),
         "error must name the path relative to the project root, got: {}",
         out.stderr
     );

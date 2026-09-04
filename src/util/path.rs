@@ -53,7 +53,10 @@ fn strip_verbatim(path: &Path) -> PathBuf {
     let rest = text
         .strip_prefix(r"\\?\UNC\")
         .map(|unc| format!(r"\\{unc}"))
-        .or_else(|| text.strip_prefix(r"\\?\").map(std::string::ToString::to_string));
+        .or_else(|| {
+            text.strip_prefix(r"\\?\")
+                .map(std::string::ToString::to_string)
+        });
     let text = rest.unwrap_or_else(|| text.to_string());
     let mut chars: Vec<char> = text.chars().collect();
     if chars.len() >= 2 && chars[1] == ':' {
@@ -79,7 +82,11 @@ fn normalize(path: &Path) -> PathBuf {
             }
         }
     }
-    if out.as_os_str().is_empty() { PathBuf::from(".") } else { out }
+    if out.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        out
+    }
 }
 
 #[cfg(test)]
@@ -90,7 +97,10 @@ mod tests {
     #[test]
     fn normalizes_parent_components() {
         assert_eq!(normalize(Path::new("/repo/child/..")), Path::new("/repo"));
-        assert_eq!(normalize(Path::new("child/../src/lib.rs")), Path::new("src/lib.rs"));
+        assert_eq!(
+            normalize(Path::new("child/../src/lib.rs")),
+            Path::new("src/lib.rs")
+        );
         assert_eq!(normalize(Path::new("../src")), Path::new("../src"));
     }
 
@@ -113,7 +123,10 @@ mod tests {
         std::os::windows::fs::symlink_dir(real.path(), &link).unwrap();
 
         assert_eq!(canonical(&link), canonical(real.path()));
-        assert_eq!(canonical(&link.join("src")), canonical(&real.path().join("src")));
+        assert_eq!(
+            canonical(&link.join("src")),
+            canonical(&real.path().join("src"))
+        );
     }
 
     #[test]

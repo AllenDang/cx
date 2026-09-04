@@ -21,7 +21,12 @@ fn corpus_indexes_every_supported_file() {
     let p = fixture_project(CORPUS);
     let out = run_cx(p.path(), &["--json", "symbols", "--all"]);
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
-    assert_eq!(out.json_len(), 41, "total symbols in corpus\n{}", out.stdout);
+    assert_eq!(
+        out.json_len(),
+        41,
+        "total symbols in corpus\n{}",
+        out.stdout
+    );
 }
 
 #[test]
@@ -46,7 +51,10 @@ fn overview_no_tests_still_lists_production_files() {
 fn test_paths_are_classified_by_convention() {
     let p = fixture_project(CORPUS);
     let all = run_cx(p.path(), &["--json", "overview", ".", "--full", "--all"]);
-    let with_no_tests = run_cx(p.path(), &["--json", "overview", ".", "--full", "--all", "--no-tests"]);
+    let with_no_tests = run_cx(
+        p.path(),
+        &["--json", "overview", ".", "--full", "--all", "--no-tests"],
+    );
     assert_eq!(all.code, 0, "stderr: {}", all.stderr);
     assert_eq!(with_no_tests.code, 0, "stderr: {}", with_no_tests.stderr);
     // tests/ecs_test.cpp contributes one symbol that --no-tests removes.
@@ -68,11 +76,19 @@ fn test_paths_are_classified_by_convention() {
 #[test]
 fn cpp_declaration_and_definition_are_currently_indistinguishable() {
     let p = fixture_project(CORPUS);
-    let out = run_cx(p.path(), &["--json", "definition", "--name", "validate_param", "--all"]);
+    let out = run_cx(
+        p.path(),
+        &["--json", "definition", "--name", "validate_param", "--all"],
+    );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     let rows = out.json();
     let rows = rows.as_array().unwrap();
-    assert_eq!(rows.len(), 2, "decl in header + def in source\n{}", out.stdout);
+    assert_eq!(
+        rows.len(),
+        2,
+        "decl in header + def in source\n{}",
+        out.stdout
+    );
 
     let files: Vec<&str> = rows.iter().map(|r| r["file"].as_str().unwrap()).collect();
     assert_eq!(files, vec!["include/ange/ecs.hpp", "src/ecs.cpp"]);
@@ -112,14 +128,29 @@ fn same_name_symbols_in_different_scopes_are_not_qualified() {
     assert_eq!(files.iter().filter(|f| **f == "src/lib.rs").count(), 2);
     assert_eq!(files.iter().filter(|f| **f == "src/app.ts").count(), 3);
     assert_eq!(files.iter().filter(|f| **f == "src/scope_b.cpp").count(), 2);
-    assert_eq!(files.iter().filter(|f| **f == "vendor/thirdparty/blob.cpp").count(), 1);
-    assert_eq!(files.iter().filter(|f| **f == "generated/gen_api.cpp").count(), 1);
+    assert_eq!(
+        files
+            .iter()
+            .filter(|f| **f == "vendor/thirdparty/blob.cpp")
+            .count(),
+        1
+    );
+    assert_eq!(
+        files
+            .iter()
+            .filter(|f| **f == "generated/gen_api.cpp")
+            .count(),
+        1
+    );
 }
 
 #[test]
 fn definition_matches_every_scope_of_a_shared_name() {
     let p = fixture_project(CORPUS);
-    let out = run_cx(p.path(), &["--json", "definition", "--name", "run", "--all"]);
+    let out = run_cx(
+        p.path(),
+        &["--json", "definition", "--name", "run", "--all"],
+    );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     assert_eq!(out.json_len(), 12, "{}", out.stdout);
 }
@@ -129,7 +160,15 @@ fn definition_from_narrows_to_one_scope() {
     let p = fixture_project(CORPUS);
     let out = run_cx(
         p.path(),
-        &["--json", "definition", "--name", "run", "--from", "src/scope_a.cpp", "--all"],
+        &[
+            "--json",
+            "definition",
+            "--name",
+            "run",
+            "--from",
+            "src/scope_a.cpp",
+            "--all",
+        ],
     );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     let rows = out.json();
@@ -144,7 +183,17 @@ fn definition_from_narrows_to_one_scope() {
 #[test]
 fn references_are_syntax_filtered_not_text_matched() {
     let p = fixture_project(CORPUS);
-    let out = run_cx(p.path(), &["--json", "references", "--name", "run", "--context", "--all"]);
+    let out = run_cx(
+        p.path(),
+        &[
+            "--json",
+            "references",
+            "--name",
+            "run",
+            "--context",
+            "--all",
+        ],
+    );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     let rows = out.json();
     let rows = rows.as_array().unwrap();
@@ -155,7 +204,8 @@ fn references_are_syntax_filtered_not_text_matched() {
 
     // src/comments.cpp mentions `run` only in comments and a string literal.
     assert!(
-        rows.iter().all(|r| r["file"].as_str().unwrap() != "src/comments.cpp"),
+        rows.iter()
+            .all(|r| r["file"].as_str().unwrap() != "src/comments.cpp"),
         "comment/string text must not be reported as a reference\n{}",
         out.stdout
     );
@@ -169,14 +219,25 @@ fn references_are_syntax_filtered_not_text_matched() {
     assert_eq!(callers, vec!["run", "run", "run_all"]);
 
     // No evidence/resolution labelling yet — Phase 7 must add it.
-    assert!(rows.iter().all(|r| r.get("evidence").is_none()), "{}", out.stdout);
-    assert!(rows.iter().all(|r| r.get("resolution").is_none()), "{}", out.stdout);
+    assert!(
+        rows.iter().all(|r| r.get("evidence").is_none()),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        rows.iter().all(|r| r.get("resolution").is_none()),
+        "{}",
+        out.stdout
+    );
 }
 
 #[test]
 fn references_summary_groups_by_file() {
     let p = fixture_project(CORPUS);
-    let out = run_cx(p.path(), &["--json", "references", "--name", "run", "--all"]);
+    let out = run_cx(
+        p.path(),
+        &["--json", "references", "--name", "run", "--all"],
+    );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     let rows = out.json();
     let rows = rows.as_array().unwrap();
@@ -199,7 +260,14 @@ fn empty_result_currently_emits_no_json_body() {
     let p = fixture_project(CORPUS);
     let out = run_cx(
         p.path(),
-        &["--json", "references", "--name", "run", "--file", "src/comments.cpp"],
+        &[
+            "--json",
+            "references",
+            "--name",
+            "run",
+            "--file",
+            "src/comments.cpp",
+        ],
     );
     assert_eq!(out.code, 0, "empty result is not an error");
     assert_eq!(out.stdout, "", "no JSON body today: {:?}", out.stdout);
@@ -218,7 +286,10 @@ fn json_root_type_changes_with_pagination() {
     let unpaged = run_cx(p.path(), &["--json", "symbols", "--name", "run", "--all"]);
     assert!(unpaged.json().is_array(), "{}", unpaged.stdout);
 
-    let truncated = run_cx(p.path(), &["--json", "symbols", "--name", "run", "--limit", "4"]);
+    let truncated = run_cx(
+        p.path(),
+        &["--json", "symbols", "--name", "run", "--limit", "4"],
+    );
     let env = truncated.json();
     assert!(env.is_object(), "{}", truncated.stdout);
     assert_eq!(env["total"].as_u64().unwrap(), 12);
@@ -235,10 +306,16 @@ fn json_root_type_changes_with_pagination() {
 
     let offset = run_cx(
         p.path(),
-        &["--json", "symbols", "--name", "run", "--offset", "10", "--all"],
+        &[
+            "--json", "symbols", "--name", "run", "--offset", "10", "--all",
+        ],
     );
     let env = offset.json();
-    assert!(env.is_object(), "offset alone also switches root type: {}", offset.stdout);
+    assert!(
+        env.is_object(),
+        "offset alone also switches root type: {}",
+        offset.stdout
+    );
     assert_eq!(env["total"].as_u64().unwrap(), 12);
     assert_eq!(env["results"].as_array().unwrap().len(), 2);
 }
@@ -250,7 +327,9 @@ fn pagination_pages_cover_the_full_result_set_without_overlap() {
     for offset in ["0", "5", "10"] {
         let out = run_cx(
             p.path(),
-            &["--json", "symbols", "--name", "run", "--offset", offset, "--limit", "5"],
+            &[
+                "--json", "symbols", "--name", "run", "--offset", offset, "--limit", "5",
+            ],
         );
         assert_eq!(out.code, 0, "stderr: {}", out.stderr);
         let env = out.json();
@@ -263,7 +342,11 @@ fn pagination_pages_cover_the_full_result_set_without_overlap() {
             ));
         }
     }
-    assert_eq!(seen.len(), 12, "three pages must cover all 12 rows: {seen:?}");
+    assert_eq!(
+        seen.len(),
+        12,
+        "three pages must cover all 12 rows: {seen:?}"
+    );
 }
 
 // --- §4.4 freshness --------------------------------------------------------
@@ -271,7 +354,10 @@ fn pagination_pages_cover_the_full_result_set_without_overlap() {
 #[test]
 fn edited_file_is_reindexed_on_next_query() {
     let p = fixture_project(CORPUS);
-    let before = run_cx(p.path(), &["--json", "symbols", "--file", "src/scope_a.cpp", "--all"]);
+    let before = run_cx(
+        p.path(),
+        &["--json", "symbols", "--file", "src/scope_a.cpp", "--all"],
+    );
     assert_eq!(before.json_len(), 2, "{}", before.stdout);
 
     let target = p.path().join("src/scope_a.cpp");
@@ -280,8 +366,16 @@ fn edited_file_is_reindexed_on_next_query() {
     std::fs::write(&target, src).unwrap();
     support::touch_future(&target);
 
-    let after = run_cx(p.path(), &["--json", "symbols", "--file", "src/scope_a.cpp", "--all"]);
-    assert_eq!(after.json_len(), 4, "new symbol must appear\n{}", after.stdout);
+    let after = run_cx(
+        p.path(),
+        &["--json", "symbols", "--file", "src/scope_a.cpp", "--all"],
+    );
+    assert_eq!(
+        after.json_len(),
+        4,
+        "new symbol must appear\n{}",
+        after.stdout
+    );
 }
 
 #[test]
@@ -295,7 +389,12 @@ fn deleted_file_drops_out_of_the_index() {
     std::fs::remove_file(p.path().join("vendor/thirdparty/blob.cpp")).unwrap();
 
     let out = run_cx(p.path(), &["--json", "symbols", "--name", "run", "--all"]);
-    assert_eq!(out.json_len(), 11, "vendor copy must disappear\n{}", out.stdout);
+    assert_eq!(
+        out.json_len(),
+        11,
+        "vendor copy must disappear\n{}",
+        out.stdout
+    );
 }
 
 #[test]
@@ -329,7 +428,10 @@ fn freshness_is_not_observable_in_output() {
     let out = run_cx(p.path(), &["--json", "symbols", "--name", "run", "--all"]);
     let text = out.stdout;
     for field in ["freshness", "generation", "files_checked", "files_updated"] {
-        assert!(!text.contains(field), "unexpected freshness field {field}: {text}");
+        assert!(
+            !text.contains(field),
+            "unexpected freshness field {field}: {text}"
+        );
     }
 }
 
@@ -341,14 +443,21 @@ fn unindexed_file_filter_exits_1() {
     let out = run_cx(p.path(), &["--json", "symbols", "--file", "src/nope.cpp"]);
     assert_eq!(out.code, 1);
     assert!(out.stdout.is_empty(), "{}", out.stdout);
-    assert!(out.stderr.contains("file not in index"), "stderr: {}", out.stderr);
+    assert!(
+        out.stderr.contains("file not in index"),
+        "stderr: {}",
+        out.stderr
+    );
 }
 
 #[test]
 fn unsupported_file_type_reports_extension() {
     let p = fixture_project(CORPUS);
     std::fs::write(p.path().join("notes.unknownext"), "run\n").unwrap();
-    let out = run_cx(p.path(), &["--json", "symbols", "--file", "notes.unknownext"]);
+    let out = run_cx(
+        p.path(),
+        &["--json", "symbols", "--file", "notes.unknownext"],
+    );
     assert_eq!(out.code, 1);
     assert!(
         out.stderr.contains("unsupported file type: .unknownext"),

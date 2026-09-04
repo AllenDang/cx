@@ -52,7 +52,8 @@ drop_index() { rm -rf "$BENCH_CACHE/indexes"; }
 
 # Peak RSS in MiB plus wall/user/sys, portable across macOS and GNU time.
 timed() {
-    local label="$1"; shift
+    local label="$1"
+    shift
     local err rc
     err="$(mktemp)"
     if /usr/bin/time -l "$@" >/dev/null 2>"$err"; then rc=0; else rc=$?; fi
@@ -72,13 +73,14 @@ timed() {
 
 # Median and p95 of N warm runs, in milliseconds, plus stdout bytes.
 warm() {
-    local label="$1"; shift
+    local label="$1"
+    shift
     local times=() bytes=0 t0 t1
     for _ in $(seq "$RUNS"); do
         t0=$(python3 -c 'import time;print(time.perf_counter_ns())')
         bytes=$(cx "$@" 2>/dev/null | wc -c | tr -d ' ')
         t1=$(python3 -c 'import time;print(time.perf_counter_ns())')
-        times+=("$(( (t1 - t0) / 1000000 ))")
+        times+=("$(((t1 - t0) / 1000000))")
     done
     local sorted median p95
     sorted=$(printf '%s\n' "${times[@]}" | sort -n)
@@ -96,8 +98,8 @@ echo
 echo "== cold index =="
 drop_index
 timed "cold-build" "$CX_BIN" --root "$PROJECT" symbols --limit 1
-index_bytes=$(find "$BENCH_CACHE/indexes" -name '*.db' -exec stat -f%z {} \; 2>/dev/null \
-    || find "$BENCH_CACHE/indexes" -name '*.db' -exec stat -c%s {} \; 2>/dev/null)
+index_bytes=$(find "$BENCH_CACHE/indexes" -name '*.db' -exec stat -f%z {} \; 2>/dev/null ||
+    find "$BENCH_CACHE/indexes" -name '*.db' -exec stat -c%s {} \; 2>/dev/null)
 printf 'index-bytes\t%s\n\n' "${index_bytes:-?}"
 
 # cx --json returns a bare array when nothing is truncated and an envelope
@@ -126,7 +128,7 @@ echo
 echo "== incremental refresh =="
 TARGET="$TARGET_FILE"
 if [[ -n "$TARGET" && "$TARGET" != "." && -f "$PROJECT/$TARGET" ]]; then
-    printf '\n' >> "$PROJECT/$TARGET"
+    printf '\n' >>"$PROJECT/$TARGET"
     timed "one-file-refresh" "$CX_BIN" --root "$PROJECT" overview "$TARGET"
     # Restore the file byte-for-byte.
     python3 - "$PROJECT/$TARGET" <<'PY'

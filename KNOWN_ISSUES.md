@@ -13,7 +13,7 @@ embeddedtemplate, nushell).
 
 C# support can be re-added once the upstream fix lands.
 
-**Tracking**: https://github.com/kreuzberg-dev/tree-sitter-language-pack/issues/80
+**Tracking**: <https://github.com/kreuzberg-dev/tree-sitter-language-pack/issues/80>
 
 ## tree-sitter-language-pack: cache invalidated on every crate version bump
 
@@ -26,7 +26,7 @@ on macOS) to bypass the version-keyed path entirely. Grammars survive crate vers
 **Status (2026-03-28)**: Issue #84 was closed as completed on 2026-03-26, but tested v1.3.3 and
 the cache is still keyed by `CARGO_PKG_VERSION`. Not fixed upstream.
 
-**Tracking**: https://github.com/kreuzberg-dev/tree-sitter-language-pack/issues/84
+**Tracking**: <https://github.com/kreuzberg-dev/tree-sitter-language-pack/issues/84>
 
 ## Case-only path aliases are not unified
 
