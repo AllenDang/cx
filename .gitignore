@@ -1,2 +1,6 @@
 /target
+/vendor/pi-cx/
+/dist/
+node_modules/
+.pi-cx-install-*
 .ralph/

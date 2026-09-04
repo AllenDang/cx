@@ -40,9 +40,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
+  pi-extension:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck:pi
+      - run: npm run test:pi
+
   auto-tag:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: [fmt, test, clippy]
+    needs: [fmt, test, clippy, pi-extension]
     runs-on: ubuntu-latest
     permissions:
       contents: write

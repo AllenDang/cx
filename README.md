@@ -28,6 +28,16 @@ On Windows (PowerShell):
 irm https://raw.githubusercontent.com/ind-igo/cx/master/install.ps1 | iex
 ```
 
+## Pi extension
+
+This repository is also a Git Pi package named `pi-cx` for macOS arm64:
+
+```bash
+pi install git:github.com/AllenDang/cx@v0.7.2
+```
+
+It registers eight strongly typed `cx_*` tools and the read-only `/cx-status` diagnostic. The package downloads a version-pinned release asset during installation, verifies the bundled cx binary and Tree-sitter grammars, and uses cx's standard shared cache. It never falls back to a host `cx` on `PATH`. See [`extensions/pi-cx/README.md`](extensions/pi-cx/README.md) for security, cache, grammar, and troubleshooting details.
+
 ## Agent integration
 
 `cx skill` prints a prompt that teaches any coding agent to prefer cx over raw file reads. Pipe it into whichever instructions file your agent reads:
