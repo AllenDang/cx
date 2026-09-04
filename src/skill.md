@@ -65,6 +65,7 @@ cx symbols --role declaration                        signature-only sites (C/C++
 cx symbols --kinds [--file PATH]                     list distinct kinds with counts
 cx definition --name NAME [--from PATH] [--kind K]   get a definition (optionally filtered to specific kind, e.g. function body)
 cx references --name NAME [--file PATH] [--context]  find usages, `--context` will show the line where the use appears
+cx refresh PATH...                                   re-index the named files now, by content hash
 ```
 
 - `--file` and `--from` are identical and restrict the symbol to a precise file, but only if there is an exact match for
@@ -77,6 +78,11 @@ cx references --name NAME [--file PATH] [--context]  find usages, `--context` wi
 ## Key patterns
 
 - Start with `cx overview .`, drill into subdirectories — cheaper than ls + reading files.
+- **After you edit files, run `cx refresh <the paths you changed>` before querying them again.** Ordinary
+  queries auto-detect changes by size+mtime, which misses an edit that preserves both; `cx refresh` hashes
+  the named files so the update is guaranteed. Every result reports `freshness.generation`, and a query
+  showing the same generation `refresh` reported is proof your edit is in the index.
+- Use `--fresh verified` when you need a whole-project content check instead of naming paths.
 - Can't find a symbol that should exist? Make sure the language grammar is installed via `cx lang list`.
 - `cx definition --name X` gives exact text for Edit tool's `old_string` without reading the whole file.
 - In C/C++ (and Rust traits, TypeScript interfaces) a name can have both a declaration and a definition. `cx definition`
@@ -119,3 +125,5 @@ When truncated, stderr shows: `cx: 3/32 definitions for "X"`. Use `--file` (or `
 - `warnings` flags things like several candidates sharing one name — read it before assuming the first
   result is the only one.
 - Under `--json`, stderr stays quiet; the payload is authoritative.
+- `freshness` reports the index `generation` that answered, the `mode` used (`metadata`, `verified`, or
+  `paths`), and how many files were checked/updated/removed. A stale answer is labelled, never disguised.

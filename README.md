@@ -225,6 +225,43 @@ Use `--file src/index.rs` to scope the search to a single file. Includes both de
 
 References are computed on-the-fly via AST walking (not indexed), so results are always fresh.
 
+### Freshness -- proving the index matches your edits
+
+Every result reports which index generation answered it and how that was checked:
+
+```json
+"freshness": {
+  "generation": 8,
+  "mode": "metadata",
+  "files_checked": 48,
+  "files_updated": 0,
+  "files_removed": 0,
+  "files_skipped_missing_grammar": 0
+}
+```
+
+Three modes, in increasing strength:
+
+| Mode | How | Cost |
+| --- | --- | --- |
+| `metadata` (default) | size + high-resolution mtime, no file reads | baseline |
+| `verified` (`--fresh verified`) | content hash of every indexable file | ~+25% on a 31 MB / 2,000-file tree |
+| `paths` (`cx refresh <paths>`) | content hash of just the named files | one file: ~40 ms |
+
+`metadata` has one real blind spot: an edit that preserves **both** size and mtime. cx does not pretend otherwise -- such a query still reports `mode: metadata` and `files_updated: 0`. Use `--fresh verified` or name the files:
+
+```bash
+# after editing, name what changed — hashed immediately, regardless of clock granularity
+cx refresh src/a.cpp src/b.h
+
+[2]{file,status}:
+  src/a.cpp,updated
+  src/b.h,unchanged
+cx: generation 9 | mode paths | checked 2 | updated 1 | removed 0
+```
+
+The recommended agent loop is **edit -> `cx refresh <changed paths>` -> query**. Because `refresh` reports the generation it established, and later queries report the generation that answered them, a matching pair is mechanical proof your edit is included. `cx refresh` with no arguments verifies the whole project by content hash.
+
 ### Pagination
 
 Commands have default result limits to keep output bounded: definition shows 3, symbols 100, references 50. When results are truncated, cx prints a hint:

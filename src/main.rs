@@ -40,6 +40,11 @@ struct Cli {
     /// Exclude test files and test symbols from results
     #[arg(long, global = true)]
     no_tests: bool,
+
+    /// How to verify the index matches disk before answering:
+    /// metadata (size + mtime, fast default) or verified (content hashes)
+    #[arg(long, global = true, value_name = "MODE", default_value = "metadata")]
+    fresh: index::FreshnessMode,
 }
 
 #[derive(Subcommand)]
@@ -103,6 +108,11 @@ enum Commands {
         /// Show exact reference lines with source context
         #[arg(long)]
         context: bool,
+    },
+    /// Re-index the named paths immediately, by content hash
+    Refresh {
+        /// Files that changed (e.g. after an edit); omit to verify the whole project
+        paths: Vec<PathBuf>,
     },
     /// Manage language grammars
     Lang {
@@ -174,6 +184,10 @@ fn main() {
 
     let cli = Cli::parse();
 
+    // How much verification a query performs before answering.  `cx refresh`
+    // overrides this with an explicit path list.
+    let freshness = index::FreshnessRequest::new(cli.fresh, Vec::new());
+
     let resolve_pagination = |default_limit: Option<usize>| -> query::Pagination {
         let limit = if cli.all {
             None
@@ -187,7 +201,7 @@ fn main() {
     let exit_code = match cli.command {
         Commands::Overview { ref path, full } => {
             let root = resolve_root(&cli.root, Some(path));
-            let idx = index::Index::load_or_build(&root);
+            let idx = index::Index::load_or_build(&root, &freshness);
             let abs = util::path::canonical(path);
             if abs.is_dir() {
                 query::dir_overview(&idx, path, full, cli.no_tests, cli.json, &resolve_pagination(None))
@@ -198,7 +212,7 @@ fn main() {
         }
         Commands::Symbols { ref file, ref name, kind, role, kinds } => {
             let root = resolve_root(&cli.root, file.as_deref());
-            let idx = index::Index::load_or_build(&root);
+            let idx = index::Index::load_or_build(&root, &freshness);
             if kinds {
                 query::kind_counts(&idx, file.as_deref(), cli.json)
             } else {
@@ -213,7 +227,7 @@ fn main() {
         }
         Commands::Definition { ref name, ref from, kind, role, max_lines } => {
             let root = resolve_root(&cli.root, from.as_deref());
-            let idx = index::Index::load_or_build(&root);
+            let idx = index::Index::load_or_build(&root, &freshness);
             let default = if from.is_some() { None } else { Some(3) };
             let filters = query::Filters {
                 file: from.as_deref(),
@@ -225,8 +239,24 @@ fn main() {
         }
         Commands::References { ref name, ref file, context } => {
             let root = resolve_root(&cli.root, file.as_deref());
-            let idx = index::Index::load_or_build(&root);
+            let idx = index::Index::load_or_build(&root, &freshness);
             query::references(&idx, name, file.as_deref(), context, cli.json, &resolve_pagination(Some(50)))
+        }
+        Commands::Refresh { ref paths } => {
+            // Deliberately not derived from the path arguments: refresh operates
+            // on files inside the current project, so a stray outside path must
+            // be reported as such rather than silently retargeting cx at
+            // whatever directory that path happens to live in.
+            let root = resolve_root(&cli.root, None);
+            // Named paths are checked by content hash; with no arguments this
+            // degrades to a whole-project content verification.
+            let req = if paths.is_empty() {
+                index::FreshnessRequest::new(index::FreshnessMode::Verified, Vec::new())
+            } else {
+                index::FreshnessRequest::new(index::FreshnessMode::Paths, paths.clone())
+            };
+            let idx = index::Index::load_or_build(&root, &req);
+            query::refresh_report(&idx, paths, cli.json)
         }
         Commands::Lang { action } => {
             match action {

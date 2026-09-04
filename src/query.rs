@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use memchr::memmem;
 use serde::Serialize;
 
-use crate::index::{FileData, Index, Symbol, SymbolKind, SymbolRole};
+use crate::index::{FileData, Freshness, Index, Symbol, SymbolKind, SymbolRole};
 use crate::language::{self, detect_language};
 use crate::output::{
     Envelope, ErrorCode, PageInfo, QueryInfo, command_with_all, command_with_offset,
@@ -68,10 +68,17 @@ struct QueryFailure {
 
 /// Emit a failure: an error envelope under `--json`, the familiar `cx: ...`
 /// line otherwise.  Always exit code 1.
-fn fail(json: bool, kind: &'static str, subject: Option<String>, failure: QueryFailure) -> i32 {
+fn fail(
+    json: bool,
+    kind: &'static str,
+    subject: Option<String>,
+    freshness: &Freshness,
+    failure: QueryFailure,
+) -> i32 {
     if json {
         print_error_json(
             QueryInfo::new(kind, subject),
+            freshness.clone(),
             failure.code,
             &failure.message,
         );
@@ -90,6 +97,7 @@ fn emit<T: Serialize>(
     json: bool,
     kind: &'static str,
     subject: Option<String>,
+    freshness: &Freshness,
     paged: &Paginated<T>,
     hint_noun: &str,
     narrow_hint: &str,
@@ -104,6 +112,7 @@ fn emit<T: Serialize>(
         }
         let envelope = Envelope::new(
             QueryInfo::new(kind, subject),
+            freshness.clone(),
             paged.page_info(),
             &paged.items,
         )
@@ -222,7 +231,7 @@ pub fn symbols(
     let files_to_search: Vec<(&PathBuf, &FileData)> = match rel_path {
         Some(ref rel) => match resolve_file_filter(rel, index) {
             Ok(v) => v,
-            Err(failure) => return fail(json, query_kind, subject, failure),
+            Err(failure) => return fail(json, query_kind, subject, &index.freshness, failure),
         },
         None => index.entries.iter().collect(),
     };
@@ -275,7 +284,7 @@ pub fn symbols(
             })
             .collect();
         let paged = paginate(out, pg);
-        emit(json, query_kind, subject, &paged, "symbols", NARROW_SYMBOLS)
+        emit(json, query_kind, subject, &index.freshness, &paged, "symbols", NARROW_SYMBOLS)
     } else {
         let out: Vec<SymbolRowOut> = rows
             .into_iter()
@@ -288,7 +297,7 @@ pub fn symbols(
             })
             .collect();
         let paged = paginate(out, pg);
-        emit(json, query_kind, subject, &paged, "symbols", NARROW_SYMBOLS)
+        emit(json, query_kind, subject, &index.freshness, &paged, "symbols", NARROW_SYMBOLS)
     }
 }
 
@@ -311,7 +320,7 @@ pub fn kind_counts(
     let files_to_search: Vec<(&PathBuf, &FileData)> = match rel_path {
         Some(ref rel) => match resolve_file_filter(rel, index) {
             Ok(v) => v,
-            Err(failure) => return fail(json, "kinds", subject, failure),
+            Err(failure) => return fail(json, "kinds", subject, &index.freshness, failure),
         },
         None => index.entries.iter().collect(),
     };
@@ -332,7 +341,7 @@ pub fn kind_counts(
     // Kind counts are already an aggregate, so they are never paginated.
     let total = rows.len();
     let paged = Paginated { items: rows, total, offset: 0, limit: None };
-    emit(json, "kinds", subject, &paged, "kinds", NARROW_FILE)
+    emit(json, "kinds", subject, &index.freshness, &paged, "kinds", NARROW_FILE)
 }
 
 /// Execute the definition query: find symbol by exact name, return its body.
@@ -444,6 +453,7 @@ pub fn definition(
         }
         let envelope = Envelope::new(
             QueryInfo::new("definition", Some(name.to_string())),
+            index.freshness.clone(),
             paged_matches.page_info(),
             &results,
         )
@@ -520,7 +530,7 @@ pub fn references(
     let files_to_search: Vec<(&PathBuf, &FileData)> = match rel_path {
         Some(ref rel) => match resolve_file_filter(rel, index) {
             Ok(v) => v,
-            Err(failure) => return fail(json, "references", subject, failure),
+            Err(failure) => return fail(json, "references", subject, &index.freshness, failure),
         },
         None => index.entries.iter().collect(),
     };
@@ -547,6 +557,7 @@ pub fn references(
                     json,
                     "references",
                     subject,
+                    &index.freshness,
                     QueryFailure {
                         code: ErrorCode::GrammarNotInstalled,
                         message: format!(
@@ -615,11 +626,76 @@ pub fn references(
             })
             .collect();
         let paged = paginate(summary_rows, pg);
-        emit(json, "references", subject, &paged, &hint_noun, NARROW_FILE)
+        emit(json, "references", subject, &index.freshness, &paged, &hint_noun, NARROW_FILE)
     } else {
         let paged = paginate(rows, pg);
-        emit(json, "references", subject, &paged, &hint_noun, NARROW_FILE)
+        emit(json, "references", subject, &index.freshness, &paged, &hint_noun, NARROW_FILE)
     }
+}
+
+// --- Refresh ---
+
+/// What `cx refresh` did to one requested path.
+#[derive(Serialize)]
+struct RefreshRow {
+    file: String,
+    status: &'static str,
+}
+
+/// Report the outcome of an explicit refresh (roadmap §7).
+///
+/// This is the mechanical evidence an agent needs after editing: every named
+/// path is listed with what happened to it, alongside the generation those
+/// changes landed in.  A later query reporting the same generation is then
+/// proof that the edit is included.
+pub fn refresh_report(index: &Index, requested: &[PathBuf], json: bool) -> i32 {
+    let mut rows: Vec<RefreshRow> = Vec::new();
+
+    if requested.is_empty() {
+        // Whole-project verification: only changes are interesting.
+        for path in &index.updated {
+            rows.push(RefreshRow { file: display_path(path), status: "updated" });
+        }
+        for path in &index.removed {
+            rows.push(RefreshRow { file: display_path(path), status: "removed" });
+        }
+    } else {
+        for path in requested {
+            let rel = make_relative(path, &index.root);
+            let status = if index.updated.contains(&rel) {
+                "updated"
+            } else if index.removed.contains(&rel) {
+                "removed"
+            } else if index.entries.contains_key(&rel) {
+                "unchanged"
+            } else {
+                "not_indexed"
+            };
+            rows.push(RefreshRow { file: display_path(&rel), status });
+        }
+    }
+    rows.sort_by(|a, b| a.file.cmp(&b.file));
+
+    if json {
+        let total = rows.len();
+        let paged = Paginated { items: rows, total, offset: 0, limit: None };
+        return emit(true, "refresh", None, &index.freshness, &paged, "paths", NARROW_FILE);
+    }
+
+    let f = &index.freshness;
+    if rows.is_empty() {
+        eprintln!(
+            "cx: generation {} | mode {} | checked {} | nothing changed",
+            f.generation, f.mode, f.files_checked
+        );
+        return 0;
+    }
+    print_toon(&rows);
+    eprintln!(
+        "cx: generation {} | mode {} | checked {} | updated {} | removed {}",
+        f.generation, f.mode, f.files_checked, f.files_updated, f.files_removed
+    );
+    0
 }
 
 // --- Directory overview ---
@@ -736,6 +812,7 @@ pub fn dir_overview(
             json,
             "overview",
             Some(display_path(&rel_dir)),
+            &index.freshness,
             QueryFailure {
                 code: ErrorCode::NoIndexedFiles,
                 message: format!("no indexed files under {}", display_path(&rel_dir)),
@@ -825,7 +902,7 @@ pub fn dir_overview(
             }
         }
         let paged = paginate(rows, pg);
-        emit(json, "overview", subject, &paged, "entries", NARROW_SUBDIR)
+        emit(json, "overview", subject, &index.freshness, &paged, "entries", NARROW_SUBDIR)
     } else {
         let mut rows: Vec<DirOverviewRow> = Vec::new();
         for (dir_name, (file_count, sym_count)) in &subdirs {
@@ -857,7 +934,7 @@ pub fn dir_overview(
             });
         }
         let paged = paginate(rows, pg);
-        emit(json, "overview", subject, &paged, "entries", NARROW_SUBDIR)
+        emit(json, "overview", subject, &index.freshness, &paged, "entries", NARROW_SUBDIR)
     }
 }
 

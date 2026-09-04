@@ -394,6 +394,7 @@ fn json_root_type_is_stable_across_pagination() {
 
     let expected_keys = vec![
         "error",
+        "freshness",
         "next_queries",
         "page",
         "query",
@@ -626,19 +627,47 @@ fn renamed_file_moves_its_symbols() {
     assert_eq!(files.len(), 12, "{files:?}");
 }
 
-/// KNOWN GAP (roadmap §4.4, flipped by Phase 4): nothing in the output reveals
-/// index generation, freshness mode, or how many files were checked/updated.
+/// Phase 4 (roadmap §4.4, §7): every result carries the index generation that
+/// answered it and how that generation was verified.
 #[test]
-fn freshness_is_not_observable_in_output() {
+fn freshness_is_reported_with_every_result() {
     let p = fixture_project(CORPUS);
     let out = run_cx(p.path(), &["--json", "symbols", "--name", "run", "--all"]);
-    let text = out.stdout;
-    for field in ["freshness", "generation", "files_checked", "files_updated"] {
-        assert!(
-            !text.contains(field),
-            "unexpected freshness field {field}: {text}"
-        );
-    }
+    let doc = out.json();
+    let fresh = &doc["freshness"];
+
+    // The first run built the index, so it is generation 1 and every file was
+    // parsed.
+    assert_eq!(fresh["generation"].as_u64().unwrap(), 1, "{}", out.stdout);
+    assert_eq!(fresh["mode"].as_str().unwrap(), "metadata");
+    assert_eq!(fresh["files_updated"].as_u64().unwrap(), 12, "{}", out.stdout);
+    assert_eq!(fresh["files_removed"].as_u64().unwrap(), 0);
+
+    // A second query changes nothing, so the generation is unchanged and no
+    // file is re-parsed — but the check itself is still reported.
+    let again = run_cx(p.path(), &["--json", "symbols", "--name", "run", "--all"]);
+    let fresh = &again.json()["freshness"];
+    assert_eq!(fresh["generation"].as_u64().unwrap(), 1, "{}", again.stdout);
+    assert_eq!(fresh["files_updated"].as_u64().unwrap(), 0);
+    assert_eq!(fresh["files_checked"].as_u64().unwrap(), 12, "{}", again.stdout);
+}
+
+/// Phase 4 (roadmap §7): `--fresh verified` is reported as such, and a query
+/// never claims a stronger mode than it actually performed.
+#[test]
+fn freshness_mode_reflects_the_check_that_ran() {
+    let p = fixture_project(CORPUS);
+    let _ = run_cx(p.path(), &["--json", "symbols", "--all"]);
+
+    let metadata = run_cx(p.path(), &["--json", "symbols", "--name", "run", "--all"]);
+    assert_eq!(metadata.json()["freshness"]["mode"].as_str().unwrap(), "metadata");
+
+    let verified = run_cx(
+        p.path(),
+        &["--fresh", "verified", "--json", "symbols", "--name", "run", "--all"],
+    );
+    assert_eq!(verified.json()["freshness"]["mode"].as_str().unwrap(), "verified");
+    assert_eq!(verified.json_len(), 12, "{}", verified.stdout);
 }
 
 // --- Error surfaces --------------------------------------------------------

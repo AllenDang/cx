@@ -8,7 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Versioned JSON envelope (`schema_version: 1`) for every `--json` command: `{schema_version, query, page, results, warnings, next_queries, error}` with a fixed key set that never varies by result count.
+- `freshness` in every JSON result: `{generation, mode, files_checked, files_updated, files_removed, files_skipped_missing_grammar}`, so an agent can prove which index state answered its query.
+- `cx refresh <paths>` re-indexes named files immediately by content hash and reports per-path status (`updated`/`removed`/`unchanged`/`not_indexed`). With no arguments it verifies the whole project.
+- `--fresh metadata|verified` selects how much verification a query performs. `metadata` (default) compares size + mtime; `verified` hashes contents and catches edits that preserve both.
+- Versioned JSON envelope (`schema_version: 1`) for every `--json` command: `{schema_version, query, freshness, page, results, warnings, next_queries, error}` with a fixed key set that never varies by result count.
 - `next_queries` supplies exact, runnable follow-up commands for truncated pages instead of a prose hint.
 - Machine-readable error codes: `file_not_indexed`, `unsupported_file_type`, `no_indexed_files`, `grammar_not_installed`.
 - `warnings` reports ambiguity, e.g. several candidates sharing one symbol name.
@@ -18,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixture corpus (`tests/fixtures/agent_corpus`) and `scripts/bench.sh` for reproducible correctness and performance baselines.
 
 ### Changed
+- `INDEX_VERSION` 9 → 10; existing indexes rebuild automatically on first use. Index entries now store file size and a content hash (recorded from bytes already read, so indexing cost is unchanged).
+- Ordinary queries now compare file size in addition to mtime, catching same-mtime edits that change length.
 - **Breaking (`--json` only):** JSON output is always an envelope object. Previously the root was a bare array unless results were truncated or offset. Read `results` for rows and `page` for `{total, offset, limit, truncated}`.
 - A successful query with zero results now returns a parseable envelope with `results: []` and exit 0, instead of printing nothing.
 - Under `--json`, cx no longer duplicates notes and pagination hints on stderr; the payload is authoritative. Without `--json`, stderr output is unchanged.
@@ -27,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `cx --root /tmp/p overview /private/tmp/p/src/a.rs` no longer fails with "file not in index".
+- `cx refresh` no longer derives the project root from its path arguments, which could silently retarget cx at an unrelated directory and build a new index there.
 
 ## [0.7.2] - 2026-07-23
 

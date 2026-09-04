@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::language::{LangError, detect_language, download_names_for, parse_and_extract, primary_extension};
 
-pub const INDEX_VERSION: u32 = 9;
+pub const INDEX_VERSION: u32 = 10;
 
 /// Compute the cache path for a given project root.
 /// Returns `~/.cache/cx/indexes/<hash>.db` where hash is derived from the
@@ -41,6 +41,85 @@ pub struct Index {
     db: Option<Database>,
     /// In-memory mirror for fast query access.
     pub entries: HashMap<PathBuf, FileData>,
+    /// What this process did to establish that the index matches disk.
+    pub freshness: Freshness,
+    /// Paths re-parsed by this process, in scan order.  Evidence for
+    /// `cx refresh`: these files are provably part of `freshness.generation`.
+    pub updated: Vec<PathBuf>,
+    /// Paths dropped from the index by this process because they are gone.
+    pub removed: Vec<PathBuf>,
+}
+
+/// How cx decided whether the index still matches the working tree
+/// (roadmap §7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+#[clap(rename_all = "lowercase")]
+pub enum FreshnessMode {
+    /// Compare size + high-resolution mtime. Fast default, no file reads.
+    Metadata,
+    /// Hash file contents. Catches edits that preserve size and mtime.
+    Verified,
+    /// Only the paths the caller named were checked, by content hash.
+    /// Selected by `cx refresh <paths>`, not by `--fresh`.
+    #[value(skip)]
+    Paths,
+}
+
+impl FreshnessMode {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Metadata => "metadata",
+            Self::Verified => "verified",
+            Self::Paths => "paths",
+        }
+    }
+}
+
+/// What the caller asked cx to verify before answering.
+pub struct FreshnessRequest {
+    pub mode: FreshnessMode,
+    /// Paths to check in `Paths` mode; ignored otherwise.
+    pub paths: Vec<PathBuf>,
+}
+
+impl FreshnessRequest {
+    pub const fn new(mode: FreshnessMode, paths: Vec<PathBuf>) -> Self {
+        Self { mode, paths }
+    }
+}
+
+/// Observable freshness facts for one command (roadmap §4.4, §6.1).
+///
+/// Reported so an agent can prove which generation answered its query and how
+/// that generation was established, instead of trusting that cx "probably"
+/// noticed the edit.
+#[derive(Debug, Clone, Serialize)]
+pub struct Freshness {
+    /// Monotonic index generation, bumped on every committed write.
+    pub generation: u64,
+    pub mode: &'static str,
+    /// Files compared against the index by this command.
+    pub files_checked: usize,
+    /// Files re-parsed because they had changed.
+    pub files_updated: usize,
+    /// Files removed from the index because they are gone from disk.
+    pub files_removed: usize,
+    /// Indexable files skipped because their grammar is not installed.
+    pub files_skipped_missing_grammar: usize,
+}
+
+impl Freshness {
+    pub const fn empty(mode: FreshnessMode) -> Self {
+        Self {
+            generation: 0,
+            mode: mode.as_str(),
+            files_checked: 0,
+            files_updated: 0,
+            files_removed: 0,
+            files_skipped_missing_grammar: 0,
+        }
+    }
 }
 
 enum CrawlResult {
@@ -60,15 +139,24 @@ pub struct FileData {
 pub struct FileEntry {
     pub mtime_secs: u64,
     pub mtime_nanos: u32,
+    /// File length in bytes, so a same-mtime edit that changes length is caught
+    /// by the cheap metadata check.
+    pub size: u64,
+    /// Hash of the file contents at index time.  Free to record (the file was
+    /// read to parse it) and the only way `verified` mode can detect an edit
+    /// that preserved both size and mtime.
+    pub content_hash: u64,
     pub language: String,
 }
 
 impl FileEntry {
-    fn new(mtime: SystemTime, language: &str) -> Self {
+    fn new(mtime: SystemTime, size: u64, content_hash: u64, language: &str) -> Self {
         let dur = mtime.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
         Self {
             mtime_secs: dur.as_secs(),
             mtime_nanos: dur.subsec_nanos(),
+            size,
+            content_hash,
             language: language.to_string(),
         }
     }
@@ -76,6 +164,16 @@ impl FileEntry {
     pub fn mtime(&self) -> SystemTime {
         UNIX_EPOCH + Duration::new(self.mtime_secs, self.mtime_nanos)
     }
+}
+
+/// Hash file contents for freshness comparison.
+///
+/// Not a cryptographic digest: this only has to detect accidental edits, and it
+/// runs over every indexable file in `verified` mode.
+pub fn content_hash(bytes: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,9 +289,10 @@ fn open_db_exclusive(path: &Path) -> Result<Database, redb::DatabaseError> {
     }
 }
 
-/// Load entries from a readable database into memory.
-fn load_entries(db: &impl ReadableDatabase) -> Option<HashMap<PathBuf, FileData>> {
+/// Load entries and the generation counter from a readable database.
+fn load_entries(db: &impl ReadableDatabase) -> Option<(HashMap<PathBuf, FileData>, u64)> {
     let read_txn = db.begin_read().ok()?;
+    let generation = read_generation(&read_txn);
 
     // Check version
     let version_ok = (|| -> Option<bool> {
@@ -233,54 +332,187 @@ fn load_entries(db: &impl ReadableDatabase) -> Option<HashMap<PathBuf, FileData>
         }
     }
 
-    Some(entries)
+    Some((entries, generation))
 }
 
-/// Check if any files on disk have changed compared to indexed entries.
-fn needs_update(root: &Path, entries: &HashMap<PathBuf, FileData>) -> bool {
-    // Collect languages that are known-installed (have at least one indexed file).
-    let indexed_langs: std::collections::HashSet<&str> = entries
-        .values()
-        .map(|d| d.meta.language.as_str())
-        .collect();
+/// Read the persisted generation counter (0 when absent).
+fn read_generation(read_txn: &redb::ReadTransaction) -> u64 {
+    (|| -> Option<u64> {
+        let table = read_txn.open_table(META_TABLE).ok()?;
+        let val = table.get("generation").ok()??;
+        let bytes = val.value();
+        Some(u64::from_le_bytes(bytes.try_into().ok()?))
+    })()
+    .unwrap_or(0)
+}
+
+/// One indexable file found on disk, with the metadata needed to compare it
+/// against the index.
+struct DiskFile {
+    rel_path: PathBuf,
+    mtime: SystemTime,
+    lang: &'static str,
+}
+
+/// The difference between the index and the working tree.
+struct DiskScan {
+    /// Files that must be (re)parsed.
+    stale: Vec<DiskFile>,
+    /// Indexed paths that no longer exist on disk.
+    deleted: Vec<PathBuf>,
+    /// How many files this scan actually compared.
+    files_checked: usize,
+    /// Indexable files skipped because their grammar is missing.
+    skipped_missing_grammar: usize,
+}
+
+impl DiskScan {
+    fn is_clean(&self) -> bool {
+        self.stale.is_empty() && self.deleted.is_empty()
+    }
+}
+
+/// Compare the working tree against the index according to `req`.
+///
+/// `metadata` compares size + high-resolution mtime and reads no file bodies.
+/// `verified` hashes contents, so it catches an edit that preserved both size
+/// and mtime.  `paths` checks only the paths the caller named, by content hash.
+fn scan_disk(root: &Path, entries: &HashMap<PathBuf, FileData>, req: &FreshnessRequest) -> DiskScan {
+    if req.mode == FreshnessMode::Paths {
+        return scan_named_paths(root, entries, &req.paths);
+    }
+
+    // Languages known to be usable: either already represented in the index or
+    // with every required grammar installed.
+    let indexed_langs: HashSet<&str> = entries.values().map(|d| d.meta.language.as_str()).collect();
     let installed_grammars = tree_sitter_language_pack::downloaded_languages();
 
-    let mut matched_count = 0usize;
+    let mut scan = DiskScan {
+        stale: Vec::new(),
+        deleted: Vec::new(),
+        files_checked: 0,
+        skipped_missing_grammar: 0,
+    };
+    let mut seen: HashSet<PathBuf> = HashSet::with_capacity(entries.len());
+
     for entry in walk(root) {
         let path = entry.path();
         let Some(lang) = detect_language(path) else {
             continue;
         };
-        let rel_path = match path.strip_prefix(root) {
-            Ok(p) => p.to_path_buf(),
-            Err(_) => continue,
+        let Ok(rel_path) = path.strip_prefix(root) else {
+            continue;
         };
+        let rel_path = rel_path.to_path_buf();
+
+        let metadata = entry.metadata().ok();
+        let mtime = metadata
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let size = metadata.as_ref().map_or(0, std::fs::Metadata::len);
+
         match entries.get(&rel_path) {
             Some(data) => {
-                let mtime = entry.metadata().ok()
-                    .and_then(|m| m.modified().ok())
-                    .unwrap_or(SystemTime::UNIX_EPOCH);
-                if data.meta.mtime() != mtime {
-                    return true; // mtime changed
+                seen.insert(rel_path.clone());
+                scan.files_checked += 1;
+                let changed = match req.mode {
+                    FreshnessMode::Verified => {
+                        // Content is the authority; mtime is not consulted.
+                        fs::read(path).is_ok_and(|bytes| {
+                            content_hash(&bytes) != data.meta.content_hash
+                        })
+                    }
+                    FreshnessMode::Metadata | FreshnessMode::Paths => {
+                        data.meta.mtime() != mtime || data.meta.size != size
+                    }
+                };
+                if changed {
+                    scan.stale.push(DiskFile { rel_path, mtime, lang });
                 }
-                matched_count += 1;
             }
             None => {
-                // File not in index. If we've indexed other files of this
-                // language, or all required grammars are installed, this is a
-                // genuinely new indexable file.
                 let grammar_installed = download_names_for(lang)
                     .iter()
                     .all(|name| installed_grammars.iter().any(|installed| installed == name));
                 if indexed_langs.contains(lang) || grammar_installed {
-                    return true;
+                    scan.files_checked += 1;
+                    scan.stale.push(DiskFile { rel_path, mtime, lang });
+                } else {
+                    scan.skipped_missing_grammar += 1;
                 }
-                // Otherwise grammar isn't installed — skip, don't trigger update.
             }
         }
     }
-    // Check for deleted files
-    matched_count != entries.len()
+
+    // Anything indexed but not seen on disk is gone.
+    for path in entries.keys() {
+        if !seen.contains(path) {
+            scan.deleted.push(path.clone());
+        }
+    }
+
+    scan
+}
+
+/// `paths` mode: check exactly the paths the caller named, by content hash.
+///
+/// This is the mechanical guarantee an agent needs after editing files: name
+/// them, and they are in the next generation regardless of clock granularity.
+fn scan_named_paths(
+    root: &Path,
+    entries: &HashMap<PathBuf, FileData>,
+    paths: &[PathBuf],
+) -> DiskScan {
+    let mut scan = DiskScan {
+        stale: Vec::new(),
+        deleted: Vec::new(),
+        files_checked: 0,
+        skipped_missing_grammar: 0,
+    };
+
+    for requested in paths {
+        let abs = crate::util::path::canonical(requested);
+        let Ok(rel_path) = abs.strip_prefix(root) else {
+            eprintln!(
+                "cx: {} is outside the project root, skipping",
+                requested.display()
+            );
+            continue;
+        };
+        let rel_path = rel_path.to_path_buf();
+        scan.files_checked += 1;
+
+        if !abs.exists() {
+            if entries.contains_key(&rel_path) {
+                scan.deleted.push(rel_path);
+            }
+            continue;
+        }
+
+        let Some(lang) = detect_language(&abs) else {
+            eprintln!("cx: {} has no known grammar, skipping", requested.display());
+            scan.skipped_missing_grammar += 1;
+            continue;
+        };
+
+        let metadata = fs::metadata(&abs).ok();
+        let mtime = metadata
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+
+        // Content hash is the authority here: an agent that names a path after
+        // editing it must get a re-parse even if size and mtime look unchanged.
+        let unchanged = entries.get(&rel_path).is_some_and(|data| {
+            fs::read(&abs).is_ok_and(|bytes| content_hash(&bytes) == data.meta.content_hash)
+        });
+        if !unchanged {
+            scan.stale.push(DiskFile { rel_path, mtime, lang });
+        }
+    }
+
+    scan
 }
 
 impl Index {
@@ -292,7 +524,7 @@ impl Index {
     /// Tries a shared (read-only) open first so multiple cx processes can
     /// run concurrently.  Falls back to an exclusive open only when the
     /// index needs to be created or updated.
-    pub fn load_or_build(root: &Path) -> Self {
+    pub fn load_or_build(root: &Path, req: &FreshnessRequest) -> Self {
         let root = crate::util::path::canonical(root);
         let root = root.as_path();
         let db_path = cache_path_for(root);
@@ -304,9 +536,29 @@ impl Index {
         if db_path.exists() {
             match ReadOnlyDatabase::open(&db_path) {
                 Ok(ro_db) => {
-                    if let Some(entries) = load_entries(&ro_db)
-                        && !needs_update(root, &entries) {
-                        return Self { root: root.to_path_buf(), db: None, entries };
+                    if let Some((entries, generation)) = load_entries(&ro_db) {
+                        let scan = scan_disk(root, &entries, req);
+                        if scan.is_clean() {
+                            let freshness = Freshness {
+                                generation,
+                                mode: req.mode.as_str(),
+                                files_checked: scan.files_checked,
+                                files_updated: 0,
+                                files_removed: 0,
+                                files_skipped_missing_grammar: scan.skipped_missing_grammar,
+                            };
+                            return Self {
+                                root: root.to_path_buf(),
+                                db: None,
+                                entries,
+                                freshness,
+                                updated: Vec::new(),
+                                removed: Vec::new(),
+                            };
+                        }
+                        // Stale: fall through to the exclusive path, which
+                        // rescans rather than trusting this scan, since another
+                        // process may write in between.
                     }
                 }
                 Err(redb::DatabaseError::UpgradeRequired(_)) => {
@@ -337,15 +589,26 @@ impl Index {
             }
         };
 
-        if let Some(entries) = load_entries(&db) {
-            let mut idx = Self { root: root.to_path_buf(), db: Some(db), entries };
-            idx.incremental_update();
+        if let Some((entries, generation)) = load_entries(&db) {
+            let mut idx = Self {
+                root: root.to_path_buf(),
+                db: Some(db),
+                entries,
+                freshness: Freshness { generation, ..Freshness::empty(req.mode) },
+                updated: Vec::new(),
+                removed: Vec::new(),
+            };
+            let scan = scan_disk(root, &idx.entries, req);
+            idx.apply_scan(scan);
             idx
         } else {
             let mut idx = Self {
                 root: root.to_path_buf(),
                 db: Some(db),
                 entries: HashMap::new(),
+                freshness: Freshness::empty(req.mode),
+                updated: Vec::new(),
+                removed: Vec::new(),
             };
             idx.full_crawl();
             idx.save_all();
@@ -385,7 +648,14 @@ impl Index {
                         Ok(symbols) => CrawlResult::Indexed(
                             rel_path.clone(),
                             FileData {
-                                meta: FileEntry::new(*mtime, lang),
+                                // Size and hash come from the bytes just read,
+                                // so recording them costs no extra I/O.
+                                meta: FileEntry::new(
+                                    *mtime,
+                                    source.len() as u64,
+                                    content_hash(&source),
+                                    lang,
+                                ),
                                 symbols,
                             },
                         ),
@@ -421,6 +691,11 @@ impl Index {
             }
         }
 
+        // A full crawl checked and indexed everything it could.
+        self.freshness.files_checked = total;
+        self.freshness.files_updated = self.entries.len();
+        self.freshness.files_skipped_missing_grammar = missing_langs.values().sum();
+
         // UX: warn about missing grammars
         if !missing_langs.is_empty() {
             if self.entries.is_empty() {
@@ -444,77 +719,53 @@ impl Index {
         }
     }
 
-    /// Check for changed/new/deleted files and update the index.
-    fn incremental_update(&mut self) {
-        let mut on_disk: HashMap<PathBuf, (SystemTime, &str)> = HashMap::new();
+    /// Apply a completed scan: re-parse stale files, drop deleted ones, persist
+    /// the result, and bump the index generation.
+    ///
+    /// Freshness counters are recorded here so a query can report exactly how
+    /// many files this process checked and updated (roadmap §4.4).
+    fn apply_scan(&mut self, scan: DiskScan) {
         let mut missing_langs: HashSet<String> = HashSet::new();
 
-        for entry in walk(&self.root) {
-            let path = entry.path();
-            let Some(lang) = detect_language(path) else {
-                continue;
-            };
-
-            let rel_path = match path.strip_prefix(&self.root) {
-                Ok(p) => p.to_path_buf(),
-                Err(_) => continue,
-            };
-
-            let mtime = entry
-                .metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-
-            on_disk.insert(rel_path, (mtime, lang));
+        for path in &scan.deleted {
+            self.entries.remove(path);
         }
 
-        // Remove deleted files
-        let indexed_paths: Vec<PathBuf> = self.entries.keys().cloned().collect();
-        let mut deleted = Vec::new();
-        for path in indexed_paths {
-            if !on_disk.contains_key(&path) {
-                self.entries.remove(&path);
-                deleted.push(path);
-            }
-        }
-
-        // Add new or update changed files
-        let stale: Vec<_> = on_disk.iter()
-            .filter(|(path, (mtime, _))| {
-                !matches!(self.entries.get(*path), Some(data) if data.meta.mtime() == *mtime)
-            })
-            .map(|(path, (mtime, lang))| (path.clone(), *mtime, *lang))
-            .collect();
-
-        let total = stale.len();
+        let total = scan.stale.len();
         if total > 0 {
             eprintln!("cx: updating {total} files...");
         }
 
         let mut changed_paths: Vec<PathBuf> = Vec::new();
-        for (i, (path, mtime, lang)) in stale.iter().enumerate() {
+        for (i, file) in scan.stale.iter().enumerate() {
             if total >= 100 && (i + 1) % (total / 10) == 0 {
                 eprintln!("cx: indexed {}/{}...", i + 1, total);
             }
-            let file_entry = FileEntry::new(*mtime, lang);
-            let abs_path = self.root.join(path);
-            let symbols = match fs::read(&abs_path) {
-                Ok(source) => match parse_and_extract(lang, &source, &abs_path) {
-                    Ok(syms) => syms,
-                    Err(LangError::NotInstalled(name)) => {
-                        missing_langs.insert(name);
-                        continue;
-                    }
-                    Err(_) => continue,
-                },
+            let abs_path = self.root.join(&file.rel_path);
+            let Ok(source) = fs::read(&abs_path) else { continue };
+            let symbols = match parse_and_extract(file.lang, &source, &abs_path) {
+                Ok(syms) => syms,
+                Err(LangError::NotInstalled(name)) => {
+                    missing_langs.insert(name);
+                    continue;
+                }
                 Err(_) => continue,
             };
-            self.entries.insert(path.clone(), FileData {
-                meta: file_entry,
-                symbols,
-            });
-            changed_paths.push(path.clone());
+            self.entries.insert(
+                file.rel_path.clone(),
+                FileData {
+                    // Trust the bytes just read over the stat() results, so the
+                    // stored size and hash always describe the parsed content.
+                    meta: FileEntry::new(
+                        file.mtime,
+                        source.len() as u64,
+                        content_hash(&source),
+                        file.lang,
+                    ),
+                    symbols,
+                },
+            );
+            changed_paths.push(file.rel_path.clone());
         }
 
         for lang in &missing_langs {
@@ -522,52 +773,69 @@ impl Index {
             eprintln!("cx: skipping .{ext} files — install with: cx lang add {lang}");
         }
 
-        if !deleted.is_empty() || !changed_paths.is_empty() {
-            let Some(ref db) = self.db else { return };
-            let write_txn = match db.begin_write() {
-                Ok(txn) => txn,
-                Err(e) => {
-                    eprintln!("cx: failed to begin write for incremental update: {e}");
-                    return;
-                }
+        self.freshness.files_checked = scan.files_checked;
+        self.freshness.files_updated = changed_paths.len();
+        self.freshness.files_removed = scan.deleted.len();
+        self.freshness.files_skipped_missing_grammar =
+            scan.skipped_missing_grammar + missing_langs.len();
+        self.updated = changed_paths.clone();
+        self.removed = scan.deleted.clone();
+
+        if scan.deleted.is_empty() && changed_paths.is_empty() {
+            return;
+        }
+
+        let next_generation = self.freshness.generation + 1;
+        let Some(ref db) = self.db else { return };
+        let write_txn = match db.begin_write() {
+            Ok(txn) => txn,
+            Err(e) => {
+                eprintln!("cx: failed to begin write for incremental update: {e}");
+                return;
+            }
+        };
+        {
+            let Ok(mut files_table) = write_txn.open_table(FILES_TABLE) else {
+                eprintln!("cx: failed to open files table — rebuild with: cx cache clean");
+                return;
             };
-            {
-                let Ok(mut files_table) = write_txn.open_table(FILES_TABLE) else {
-                    eprintln!("cx: failed to open files table — rebuild with: cx cache clean");
-                    return;
-                };
-                let Ok(mut syms_table) = write_txn.open_table(SYMBOLS_TABLE) else {
-                    eprintln!("cx: failed to open symbols table — rebuild with: cx cache clean");
-                    return;
-                };
-                for path in &deleted {
+            let Ok(mut syms_table) = write_txn.open_table(SYMBOLS_TABLE) else {
+                eprintln!("cx: failed to open symbols table — rebuild with: cx cache clean");
+                return;
+            };
+            for path in &scan.deleted {
+                let key = path.to_string_lossy();
+                let _ = files_table.remove(key.as_ref());
+                let _ = syms_table.remove(key.as_ref());
+            }
+            for path in &changed_paths {
+                if let Some(data) = self.entries.get(path) {
                     let key = path.to_string_lossy();
-                    let _ = files_table.remove(key.as_ref());
-                    let _ = syms_table.remove(key.as_ref());
-                }
-                for path in &changed_paths {
-                    if let Some(data) = self.entries.get(path) {
-                        let key = path.to_string_lossy();
-                        match bincode::serialize(&data.symbols) {
-                            Ok(sym_bytes) => {
-                                let entry_bytes = encode_file_entry(&data.meta);
-                                let _ = files_table.insert(key.as_ref(), entry_bytes.as_slice());
-                                let _ = syms_table.insert(key.as_ref(), sym_bytes.as_slice());
-                            }
-                            Err(e) => eprintln!("cx: failed to serialize symbols for {key}: {e}"),
+                    match bincode::serialize(&data.symbols) {
+                        Ok(sym_bytes) => {
+                            let entry_bytes = encode_file_entry(&data.meta);
+                            let _ = files_table.insert(key.as_ref(), entry_bytes.as_slice());
+                            let _ = syms_table.insert(key.as_ref(), sym_bytes.as_slice());
                         }
+                        Err(e) => eprintln!("cx: failed to serialize symbols for {key}: {e}"),
                     }
                 }
             }
-            if let Err(e) = write_txn.commit() {
-                eprintln!("cx: failed to commit incremental update: {e}");
-            }
         }
+        if let Ok(mut meta) = write_txn.open_table(META_TABLE) {
+            let _ = meta.insert("generation", next_generation.to_le_bytes().as_slice());
+        }
+        if let Err(e) = write_txn.commit() {
+            eprintln!("cx: failed to commit incremental update: {e}");
+            return;
+        }
+        self.freshness.generation = next_generation;
     }
 
     /// Write the entire index to the database (used after `full_crawl`).
     /// Clears all existing data first to avoid stale entries.
-    fn save_all(&self) {
+    fn save_all(&mut self) {
+        let next_generation = self.freshness.generation + 1;
         let Some(ref db) = self.db else { return };
         let write_txn = match db.begin_write() {
             Ok(txn) => txn,
@@ -588,6 +856,9 @@ impl Index {
                 return;
             };
             let _ = table.insert("version", INDEX_VERSION.to_le_bytes().as_slice());
+            // A rebuild is still a new generation, so a reader can tell that the
+            // index it saw before is not the one answering now.
+            let _ = table.insert("generation", next_generation.to_le_bytes().as_slice());
         }
 
         // Write files and symbols
@@ -613,7 +884,10 @@ impl Index {
 
         if let Err(e) = write_txn.commit() {
             eprintln!("cx: failed to commit: {e}");
+            return;
         }
+        // Only claim the new generation once it is durably committed.
+        self.freshness.generation = next_generation;
     }
 
 }
@@ -648,6 +922,11 @@ mod tests {
 
     static INIT: Once = Once::new();
 
+    /// Default freshness request for tests: cheap metadata comparison.
+    fn metadata_req() -> FreshnessRequest {
+        FreshnessRequest::new(FreshnessMode::Metadata, Vec::new())
+    }
+
     fn init_grammar_cache() {
         INIT.call_once(|| {
             let config = tree_sitter_language_pack::PackConfig {
@@ -663,12 +942,23 @@ mod tests {
     fn test_file_entry_encode_roundtrip() {
         let entry = FileEntry::new(
             UNIX_EPOCH + Duration::new(1234567890, 42),
+            4096,
+            content_hash(b"fn main() {}"),
             "rust",
         );
         let bytes = encode_file_entry(&entry);
         let decoded = decode_file_entry(&bytes).expect("should decode");
         assert_eq!(entry.mtime(), decoded.mtime());
         assert_eq!(entry.language, decoded.language);
+        assert_eq!(entry.size, decoded.size);
+        assert_eq!(entry.content_hash, decoded.content_hash);
+    }
+
+    #[test]
+    fn test_content_hash_detects_same_length_edits() {
+        // The case metadata mode cannot see: same byte count, different bytes.
+        assert_ne!(content_hash(b"fn a() {}"), content_hash(b"fn b() {}"));
+        assert_eq!(content_hash(b"fn a() {}"), content_hash(b"fn a() {}"));
     }
 
     #[test]
@@ -738,6 +1028,9 @@ mod tests {
             root: cwd,
             db: Some(db),
             entries: HashMap::new(),
+            freshness: Freshness::empty(FreshnessMode::Metadata),
+            updated: Vec::new(),
+            removed: Vec::new(),
         };
         idx.full_crawl();
 
@@ -771,7 +1064,7 @@ mod tests {
             }
             fs::write(&full, content).unwrap();
         }
-        let idx = Index::load_or_build(dir.path());
+        let idx = Index::load_or_build(dir.path(), &metadata_req());
         (dir, idx)
     }
 
@@ -831,7 +1124,7 @@ mod tests {
 
         // Drop and reload — should get same data from redb
         drop(idx);
-        let idx2 = Index::load_or_build(dir.path());
+        let idx2 = Index::load_or_build(dir.path(), &metadata_req());
         assert_eq!(idx2.entries.len(), file_count);
         assert_eq!(
             idx2.entries.get(&PathBuf::from("src/main.rs")).unwrap().symbols.len(),
@@ -848,20 +1141,20 @@ mod tests {
         fs::write(dir.path().join("src/b.rs"), "fn b() {}\n").unwrap();
 
         // Build index with both files
-        let idx = Index::load_or_build(dir.path());
+        let idx = Index::load_or_build(dir.path(), &metadata_req());
         assert!(idx.entries.contains_key(&PathBuf::from("src/a.rs")));
         assert!(idx.entries.contains_key(&PathBuf::from("src/b.rs")));
         drop(idx);
 
         // Remove b.rs, rebuild
         fs::remove_file(dir.path().join("src/b.rs")).unwrap();
-        let idx2 = Index::load_or_build(dir.path());
+        let idx2 = Index::load_or_build(dir.path(), &metadata_req());
         assert!(idx2.entries.contains_key(&PathBuf::from("src/a.rs")));
         assert!(!idx2.entries.contains_key(&PathBuf::from("src/b.rs")));
 
         // Reload again — b.rs should still be gone from redb
         drop(idx2);
-        let idx3 = Index::load_or_build(dir.path());
+        let idx3 = Index::load_or_build(dir.path(), &metadata_req());
         assert!(!idx3.entries.contains_key(&PathBuf::from("src/b.rs")));
     }
 
@@ -873,7 +1166,7 @@ mod tests {
         fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").unwrap();
 
-        let idx = Index::load_or_build(dir.path());
+        let idx = Index::load_or_build(dir.path(), &metadata_req());
         assert_eq!(idx.entries.len(), 1);
         drop(idx);
 
@@ -885,7 +1178,7 @@ mod tests {
         fs::File::options().write(true).open(&b_path).unwrap()
             .set_times(fs::FileTimes::new().set_modified(future)).unwrap();
 
-        let idx2 = Index::load_or_build(dir.path());
+        let idx2 = Index::load_or_build(dir.path(), &metadata_req());
         assert_eq!(idx2.entries.len(), 2);
         assert!(idx2.entries.contains_key(&PathBuf::from("src/b.rs")));
         assert_eq!(idx2.entries.get(&PathBuf::from("src/b.rs")).unwrap().symbols.len(), 1);
@@ -899,7 +1192,7 @@ mod tests {
         fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").unwrap();
 
-        let idx = Index::load_or_build(dir.path());
+        let idx = Index::load_or_build(dir.path(), &metadata_req());
         assert_eq!(idx.entries.get(&PathBuf::from("src/a.rs")).unwrap().symbols.len(), 1);
         drop(idx);
 
@@ -911,7 +1204,7 @@ mod tests {
         fs::File::options().write(true).open(&a_path).unwrap()
             .set_times(fs::FileTimes::new().set_modified(future)).unwrap();
 
-        let idx2 = Index::load_or_build(dir.path());
+        let idx2 = Index::load_or_build(dir.path(), &metadata_req());
         assert_eq!(
             idx2.entries.get(&PathBuf::from("src/a.rs")).unwrap().symbols.len(),
             2,
@@ -928,14 +1221,14 @@ mod tests {
         fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").unwrap();
         fs::write(dir.path().join("src/b.rs"), "fn b() {}\n").unwrap();
 
-        let idx = Index::load_or_build(dir.path());
+        let idx = Index::load_or_build(dir.path(), &metadata_req());
         assert_eq!(idx.entries.len(), 2);
         drop(idx);
 
         // Delete one file
         fs::remove_file(dir.path().join("src/b.rs")).unwrap();
 
-        let idx2 = Index::load_or_build(dir.path());
+        let idx2 = Index::load_or_build(dir.path(), &metadata_req());
         assert_eq!(idx2.entries.len(), 1);
         assert!(idx2.entries.contains_key(&PathBuf::from("src/a.rs")));
         assert!(!idx2.entries.contains_key(&PathBuf::from("src/b.rs")));
@@ -950,7 +1243,7 @@ mod tests {
         fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").unwrap();
 
         // Build normally
-        let idx = Index::load_or_build(dir.path());
+        let idx = Index::load_or_build(dir.path(), &metadata_req());
         assert!(idx.entries.contains_key(&PathBuf::from("src/a.rs")));
         drop(idx);
 
@@ -967,7 +1260,7 @@ mod tests {
         drop(db);
 
         // Reload — should detect version mismatch and rebuild
-        let idx2 = Index::load_or_build(dir.path());
+        let idx2 = Index::load_or_build(dir.path(), &metadata_req());
         assert!(idx2.entries.contains_key(&PathBuf::from("src/a.rs")));
     }
 
@@ -986,7 +1279,7 @@ mod tests {
         )
         .unwrap();
 
-        let idx = Index::load_or_build(dir.path());
+        let idx = Index::load_or_build(dir.path(), &metadata_req());
         assert_eq!(idx.entries.len(), 1);
         drop(idx);
 
@@ -1002,7 +1295,7 @@ mod tests {
         }
         drop(db);
 
-        let rebuilt = Index::load_or_build(dir.path());
+        let rebuilt = Index::load_or_build(dir.path(), &metadata_req());
         let symbols = &rebuilt
             .entries
             .get(&PathBuf::from("src/a.cpp"))
@@ -1017,7 +1310,7 @@ mod tests {
 
         // And the rebuilt index is written back at the current version.
         drop(rebuilt);
-        let reopened = Index::load_or_build(dir.path());
+        let reopened = Index::load_or_build(dir.path(), &metadata_req());
         assert_eq!(
             reopened
                 .entries
@@ -1041,7 +1334,7 @@ mod tests {
         drop(idx);
 
         // Reload and verify symbols survive the roundtrip through redb + bincode
-        let idx2 = Index::load_or_build(dir.path());
+        let idx2 = Index::load_or_build(dir.path(), &metadata_req());
         let syms2 = &idx2.entries.get(&PathBuf::from("src/main.rs")).unwrap().symbols;
         assert!(syms2.iter().any(|s| s.name == "foo" && s.kind == SymbolKind::Fn));
         assert!(syms2.iter().any(|s| s.name == "Bar" && s.kind == SymbolKind::Struct));

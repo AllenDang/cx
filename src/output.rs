@@ -1,6 +1,8 @@
 use serde::Serialize;
 use toon_format::encode_default;
 
+use crate::index::Freshness;
+
 /// Version of the JSON envelope contract (roadmap §6.1).
 ///
 /// Bumped only for a breaking change to the key set or the meaning of a field.
@@ -84,12 +86,13 @@ pub struct ErrorInfo {
 /// a consumer never has to branch on whether a key exists.  The root is always
 /// an object, whether or not the result set was paginated.
 ///
-/// `freshness` is deliberately absent in schema_version 1; it arrives in
-/// Phase 4, which is the phase that actually tracks index generation.
+/// `freshness` reports which index generation answered the query and how that
+/// was established (Phase 4).
 #[derive(Serialize)]
 pub struct Envelope<'a, T: Serialize> {
     pub schema_version: u32,
     pub query: QueryInfo,
+    pub freshness: Freshness,
     pub page: PageInfo,
     pub results: &'a [T],
     pub warnings: Vec<String>,
@@ -99,10 +102,16 @@ pub struct Envelope<'a, T: Serialize> {
 }
 
 impl<'a, T: Serialize> Envelope<'a, T> {
-    pub fn new(query: QueryInfo, page: PageInfo, results: &'a [T]) -> Self {
+    pub fn new(
+        query: QueryInfo,
+        freshness: Freshness,
+        page: PageInfo,
+        results: &'a [T],
+    ) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
             query,
+            freshness,
             page,
             results,
             warnings: Vec::new(),
@@ -124,10 +133,16 @@ impl<'a, T: Serialize> Envelope<'a, T> {
 
 /// Emit a failure envelope.  `results` is empty and `error` is populated, which
 /// is what distinguishes this from a successful query that found nothing.
-pub fn print_error_json(query: QueryInfo, code: ErrorCode, message: &str) {
+pub fn print_error_json(
+    query: QueryInfo,
+    freshness: Freshness,
+    code: ErrorCode,
+    message: &str,
+) {
     let empty: [u8; 0] = [];
     let mut envelope = Envelope::new(
         query,
+        freshness,
         PageInfo { total: 0, offset: 0, limit: None, truncated: false },
         &empty,
     );
@@ -244,6 +259,7 @@ mod tests {
         let rows = vec![Sym { name: "foo".into(), kind: "fn".into() }];
         let env = Envelope::new(
             QueryInfo::new("symbols", Some("foo".into())),
+            Freshness::empty(crate::index::FreshnessMode::Metadata),
             PageInfo { total: 1, offset: 0, limit: None, truncated: false },
             &rows,
         );
@@ -255,6 +271,7 @@ mod tests {
             keys,
             vec![
                 "error",
+                "freshness",
                 "next_queries",
                 "page",
                 "query",
@@ -266,6 +283,7 @@ mod tests {
         assert_eq!(obj["schema_version"], 1);
         assert!(obj["error"].is_null());
         assert!(obj["warnings"].as_array().unwrap().is_empty());
+        assert_eq!(obj["freshness"]["mode"], "metadata");
     }
 
     #[test]
@@ -273,6 +291,7 @@ mod tests {
         let empty: [u8; 0] = [];
         let env = Envelope::new(
             QueryInfo::new("symbols", None),
+            Freshness::empty(crate::index::FreshnessMode::Verified),
             PageInfo { total: 0, offset: 0, limit: None, truncated: false },
             &empty,
         );
@@ -281,6 +300,7 @@ mod tests {
         assert_eq!(value["page"]["truncated"], false);
         assert!(value["results"].as_array().unwrap().is_empty());
         assert!(value["query"].get("subject").is_none(), "absent subject is omitted");
+        assert_eq!(value["freshness"]["mode"], "verified");
     }
 
     #[test]
