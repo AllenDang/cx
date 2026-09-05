@@ -19,6 +19,20 @@ const exec = (command, args, cwd) => new Promise((resolve, reject) => {
   child.stdout.on("data", c => out.push(c)); child.stderr.on("data", c => err.push(c)); child.once("error", reject);
   child.once("close", code => code === 0 ? resolve(Buffer.concat(out).toString()) : reject(new Error(`${command} exited ${code}: ${Buffer.concat(err).toString().slice(-1000)}`)));
 });
+async function download(url, label) {
+  let lastError;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      const response = await fetch(url, { redirect: "follow" });
+      if (!response.ok) throw new Error(`${label} download failed: ${response.status}`);
+      return Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      lastError = error;
+      if (attempt < 4) await new Promise(resolveDownload => setTimeout(resolveDownload, attempt * 1000));
+    }
+  }
+  throw new Error(`${label} download failed after retries`, { cause: lastError });
+}
 async function walk(dir, prefix = "") {
   const files = [];
   for (const name of await readdir(dir)) {
@@ -67,8 +81,7 @@ try {
     const base = `https://github.com/AllenDang/cx/releases/download/v${pkg.version}`;
     const archivePath = join(work, asset), checksumPath = `${archivePath}.sha256`;
     for (const [url, path] of [[`${base}/${asset}`, archivePath], [`${base}/${asset}.sha256`, checksumPath]]) {
-      const response = await fetch(url, { redirect: "follow" }); if (!response.ok) throw new Error(`download failed ${response.status}: ${url}`);
-      await writeFile(path, Buffer.from(await response.arrayBuffer()), { mode: 0o600 });
+      await writeFile(path, await download(url, basename(path)), { mode: 0o600 });
     }
     const expected = (await readFile(checksumPath, "utf8")).trim().match(/^([a-fA-F0-9]{64})(?:\s+\*?([^\s]+))?$/);
     if (!expected || (expected[2] && basename(expected[2]) !== asset)) throw new Error("invalid archive checksum file");
