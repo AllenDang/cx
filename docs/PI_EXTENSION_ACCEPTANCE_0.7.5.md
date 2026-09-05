@@ -1,4 +1,4 @@
-# pi-cx 0.7.4 acceptance
+# pi-cx 0.7.5 acceptance
 
 Target matrix: macOS, Linux, and Windows on arm64/x86_64.  
 Language pack: 1.16.1.  

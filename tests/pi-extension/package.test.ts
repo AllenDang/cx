@@ -17,13 +17,14 @@ test("platform matrix covers all release targets with native filenames", () => {
   assert.throws(() => currentPlatformConfig("freebsd", "x64"), /does not support/);
 });
 
-test("extension registers and activates exactly eight cx tools plus cx-status", () => {
-  const tools: any[] = [], commands: string[] = [], active: string[] = ["read"];
+test("extension factory uses only load-safe registration methods", () => {
+  const tools: any[] = [], commands: string[] = [];
   const api: any = {
     registerTool(tool: any) { tools.push(tool); }, registerCommand(name: string) { commands.push(name); }, registerEntryRenderer() {},
-    getActiveTools() { return active; }, setActiveTools(names: string[]) { active.splice(0, active.length, ...names); },
+    getActiveTools() { throw new Error("action method called during extension loading"); },
+    setActiveTools() { throw new Error("action method called during extension loading"); },
   };
-  piCx(api);
+  assert.doesNotThrow(() => piCx(api));
   assert.deepEqual(tools.map(t => t.name), ["cx_overview", "cx_symbols", "cx_definition", "cx_references", "cx_callers", "cx_callees", "cx_map", "cx_refresh"]);
-  assert.ok(tools.every(t => active.includes(t.name))); assert.deepEqual(commands, ["cx-status"]); assert.ok(tools.every(t => !Object.hasOwn(t.parameters.properties, "root")));
+  assert.deepEqual(commands, ["cx-status"]); assert.ok(tools.every(t => !Object.hasOwn(t.parameters.properties, "root")));
 });
