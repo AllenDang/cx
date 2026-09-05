@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-pi install git:github.com/AllenDang/cx@v0.7.6
+pi install git:github.com/AllenDang/cx@v0.7.7
 ```
 
 The package supports macOS, Linux, and Windows on arm64 and x86_64. Installation selects the asset matching the current OS and architecture, verifies the archive and every manifest file, then installs it under a platform-specific `vendor/pi-cx/<platform>-<arch>` directory. Installation runs native code verification and requires network access. Review package source before installation.
@@ -27,7 +27,7 @@ Every query is rooted at the current Pi session's canonical `ctx.cwd`; tools do 
 
 ## Cache and grammars
 
-pi-cx shares cx's standard cache (`~/Library/Caches/cx` on macOS), including indexes and grammars. Seven bundled Tree-sitter dylibs cover Rust, C, C++, JavaScript, JSX, TypeScript, TSX, Python, and Go. Before the first query, missing or mismatched bundled grammars are repaired offline under a cache lock using digest checks and atomic renames. Other grammars are downloaded only after confirmation in TUI/RPC mode; print/JSON mode returns a structured error.
+pi-cx shares cx's standard cache (`~/Library/Caches/cx` on macOS), including indexes and grammars. Eight bundled Tree-sitter libraries cover Rust, C, C++, JavaScript, JSX, TypeScript, TSX, Python, Go, and Markdown. Before the first query, missing or mismatched bundled grammars are repaired offline under a cache lock using digest checks and atomic renames. Other grammars are downloaded only after confirmation in TUI/RPC mode; print/JSON mode returns a structured error.
 
 ## Diagnostics and troubleshooting
 

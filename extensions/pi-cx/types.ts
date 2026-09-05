@@ -1,7 +1,7 @@
 import { currentPlatformConfig } from "./platform.js";
 
 export const PACKAGE_NAME = "pi-cx";
-export const PACKAGE_VERSION = "0.7.6";
+export const PACKAGE_VERSION = "0.7.7";
 export const CX_SCHEMA_VERSION = 1;
 export const ASSET_FORMAT_VERSION = 1;
 export const LANGUAGE_PACK_VERSION = "1.16.1";
@@ -10,10 +10,10 @@ export const TARGET = PLATFORM.target;
 export const PLATFORM_DIR = PLATFORM.platformDir;
 
 export const BUNDLED_LANGUAGES = [
-  "rust", "c", "cpp", "javascript", "jsx", "typescript", "tsx", "python", "go",
+  "rust", "c", "cpp", "javascript", "jsx", "typescript", "tsx", "python", "go", "markdown",
 ] as const;
 
-export const GRAMMAR_NAMES = ["rust", "typescript", "tsx", "python", "go", "c", "cpp"] as const;
+export const GRAMMAR_NAMES = ["rust", "typescript", "tsx", "python", "go", "c", "cpp", "markdown"] as const;
 export const SYMBOL_KINDS = [
   "fn", "struct", "enum", "trait", "type", "const", "class", "interface", "module", "event", "field", "heading",
 ] as const;

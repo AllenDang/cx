@@ -60,8 +60,8 @@ try {
     const stagedBinary = join(stage, "bin", config.binaryName);
     const version = await exec(stagedBinary, ["--version"], stage);
     if (!version.includes(pkg.version)) throw new Error(`binary/package version mismatch: ${version.trim()}/${pkg.version}`);
-    const fixture = join(work, "probe"); await mkdir(fixture); await writeFile(join(fixture, "README.md"), "# Probe\n");
-    const probe = JSON.parse(await exec(stagedBinary, ["overview", "README.md", "--root", fixture, "--json", "--limit", "1"], fixture, { HOME: process.env.HOME, PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, CX_CACHE_DIR: join(work, "probe-cache") }));
+    const fixture = join(work, "probe"); await mkdir(fixture);
+    const probe = JSON.parse(await exec(stagedBinary, ["symbols", "--kinds", "--root", fixture, "--json", "--limit", "1"], fixture, { HOME: process.env.HOME, PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, CX_CACHE_DIR: join(work, "probe-cache") }));
     if (probe.schema_version !== 1 || probe.error !== null) throw new Error("native cx schema probe failed");
   }
   await exec(process.execPath, [join(root, "scripts", "make-pi-cx-manifest.mjs"), stage, pkg.version, target, languagePackVersion], root);
@@ -70,5 +70,5 @@ try {
   await exec("tar", ["-czf", "pi-cx-asset.tar.gz", "-C", "stage", "manifest.json", "bin", "grammars"], work);
   await copyFile(temporaryArchive, archive);
   await writeFile(`${archive}.sha256`, `${await digestFile(archive)}  ${basename(archive)}\n`);
-  console.log(JSON.stringify({ archive, target, nativeVerified: native, files: 8 }));
+  console.log(JSON.stringify({ archive, target, nativeVerified: native, files: grammarNames.length + 1 }));
 } finally { await rm(work, { recursive: true, force: true }); }

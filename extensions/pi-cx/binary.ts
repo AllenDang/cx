@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join, relative } from "node:path";
 import { tmpdir } from "node:os";
@@ -61,9 +61,8 @@ async function validateBundledBinaryUncached(options: { binary?: string; manifes
 
   const fixture = await mkdtemp(join(tmpdir(), "pi-cx-probe-"));
   try {
-    await writeFile(join(fixture, "README.md"), "# Probe\n");
     const cache = join(fixture, "cache");
-    const probe = await execCapture(actual, ["overview", "README.md", "--root", fixture, "--json", "--limit", "1"], fixture, {
+    const probe = await execCapture(actual, ["symbols", "--kinds", "--root", fixture, "--json", "--limit", "1"], fixture, {
       HOME: process.env.HOME, PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, CX_CACHE_DIR: cache,
     });
     if (probe.code !== 0) throw new Error(`bundled cx probe failed: ${probe.stderr.slice(-500)}`);
