@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `pi-cx` Git Pi package with eight typed navigation tools, strict bundled-binary verification, offline grammar seeding, and per-platform release assets for macOS, Linux, and Windows on arm64/x86_64.
+- Cold-cache sibling cx processes now wait with bounded exponential backoff for the index writer instead of failing after two seconds.
+- pi-cx now renders tool failures as errors, validates argument bounds at runtime, documents qualified-name scope globs, and rejects qualified names passed to `cx_references`.
 
 - `cx callers --name X` and `cx callees --name X`: direct (one-hop) call edges, each carrying `evidence`, `resolution` (`syntax`, `lexical_scope`, `import_resolved`), file, line, and `ambiguous_candidates`. cx never picks a target it cannot justify — an unresolvable call reports an empty target and lists every candidate. Candidates are restricted to the caller's language. `callees` on an ambiguous name returns no rows and names the candidates instead of reading an arbitrary body. No multi-hop traversal and no type resolution.
 - `cx references` rows now carry `evidence` (`definition`, `declaration`, `call`, `type_reference`, `import`, `identifier_reference`) and `resolution: syntax`.

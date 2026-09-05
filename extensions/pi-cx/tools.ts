@@ -17,14 +17,16 @@ const common = {
 };
 const kind = Type.Optional(StringEnum(SYMBOL_KINDS));
 const role = Type.Optional(StringEnum(SYMBOL_ROLES));
+const scope = Type.Optional(Type.String({ description: "Glob matched against the complete qualified name. Use ANGE::*, ANGE::MaterialRegistry::*, or an exact name such as ANGE::MaterialRegistry::load; a parent without trailing ::* does not match members." }));
+const symbolName = Type.Optional(Type.String({ description: "Symbol-name glob. Use *Material* for related-name discovery; Material is an exact match." }));
 
 export const schemas = {
   overview: Type.Object({ path: Type.Optional(Type.String({ default: "." })), full: Type.Optional(Type.Boolean()), ...common }),
-  symbols: Type.Object({ name: Type.Optional(Type.String()), file: Type.Optional(Type.String()), kind, role, scope: Type.Optional(Type.String()), kinds: Type.Optional(Type.Boolean()), ...common }),
-  definition: Type.Object({ name: Type.String(), from: Type.Optional(Type.String()), kind, role, scope: Type.Optional(Type.String()), maxLines: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })), ...common }),
-  references: Type.Object({ name: Type.String(), file: Type.Optional(Type.String()), context: Type.Optional(Type.Boolean()), ...common }),
-  callers: Type.Object({ name: Type.String(), scope: Type.Optional(Type.String()), ...common }),
-  callees: Type.Object({ name: Type.String(), scope: Type.Optional(Type.String()), ...common }),
+  symbols: Type.Object({ name: symbolName, file: Type.Optional(Type.String()), kind, role, scope, kinds: Type.Optional(Type.Boolean()), ...common }),
+  definition: Type.Object({ name: Type.String({ description: "Lexical symbol name, not a qualified name" }), from: Type.Optional(Type.String()), kind, role, scope, maxLines: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })), ...common }),
+  references: Type.Object({ name: Type.String({ description: "Lexical identifier such as load; qualified names such as ANGE::MaterialRegistry::load are rejected. Use cx_callers/cx_callees with scope for qualified call evidence." }), file: Type.Optional(Type.String()), context: Type.Optional(Type.Boolean()), ...common }),
+  callers: Type.Object({ name: Type.String({ description: "Lexical callee identifier" }), scope, ...common }),
+  callees: Type.Object({ name: Type.String({ description: "Lexical symbol identifier whose body should be examined" }), scope, ...common }),
   map: Type.Object({ depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 8 })), includeVendor: Type.Optional(Type.Boolean()), includeGenerated: Type.Optional(Type.Boolean()), tests: Type.Optional(Type.Boolean()), exclude: Type.Optional(Type.Array(Type.String(), { maxItems: 32 })), fresh: common.fresh, limit: common.limit, offset: common.offset }),
   refresh: Type.Object({ paths: Type.Optional(Type.Array(Type.String(), { maxItems: 200, default: [] })) }),
 };
@@ -33,7 +35,21 @@ export type OverviewParams = Static<typeof schemas.overview>;
 export type SymbolsParams = Static<typeof schemas.symbols>;
 
 type CommonParams = { noTests?: boolean; fresh?: "metadata" | "verified"; limit?: number; offset?: number };
+function assertInteger(name: string, value: unknown, minimum: number, maximum = Number.MAX_SAFE_INTEGER): void {
+  if (value !== undefined && (!Number.isInteger(value) || (value as number) < minimum || (value as number) > maximum)) throw new Error(`${name} must be an integer in ${minimum}..${maximum}`);
+}
+function assertBoolean(name: string, value: unknown): void { if (value !== undefined && typeof value !== "boolean") throw new Error(`${name} must be a boolean`); }
+function assertString(name: string, value: unknown, required = false): void {
+  if ((required && (typeof value !== "string" || value.length === 0)) || (value !== undefined && typeof value !== "string")) throw new Error(`${name} must be ${required ? "a non-empty" : "a"} string`);
+  if (typeof value === "string" && value.includes("\0")) throw new Error(`${name} contains NUL`);
+}
+function assertEnum(name: string, value: unknown, allowed: readonly string[]): void { if (value !== undefined && (typeof value !== "string" || !allowed.includes(value))) throw new Error(`${name} must be one of: ${allowed.join(", ")}`); }
+function validateCommon(params: CommonParams): void {
+  assertBoolean("noTests", params.noTests); assertInteger("limit", params.limit, 1, 200); assertInteger("offset", params.offset, 0);
+  if (params.fresh !== undefined && !(FRESHNESS_MODES as readonly string[]).includes(params.fresh)) throw new Error("fresh must be metadata or verified");
+}
 function commonArgs(params: CommonParams, defaultLimit: number): string[] {
+  validateCommon(params);
   const args: string[] = [];
   if (params.noTests) args.push("--no-tests");
   args.push("--fresh", params.fresh ?? "metadata", "--limit", String(params.limit ?? defaultLimit));
@@ -43,29 +59,40 @@ function commonArgs(params: CommonParams, defaultLimit: number): string[] {
 function option(args: string[], flag: string, value: unknown): void { if (value !== undefined) args.push(flag, String(value)); }
 
 export async function buildOverviewArgs(root: string, p: OverviewParams): Promise<string[]> {
+  assertString("path", p.path); assertBoolean("full", p.full);
   const args = [await projectPath(root, p.path ?? ".")]; if (p.full) args.push("--full"); return [...args, ...commonArgs(p, 100)];
 }
 export async function buildSymbolsArgs(root: string, p: SymbolsParams): Promise<string[]> {
+  assertString("name", p.name); assertString("file", p.file); assertString("scope", p.scope); assertBoolean("kinds", p.kinds); assertEnum("kind", p.kind, SYMBOL_KINDS); assertEnum("role", p.role, SYMBOL_ROLES);
   if (!p.kinds && p.name === undefined && p.file === undefined && p.kind === undefined && p.role === undefined && p.scope === undefined) throw new Error("cx_symbols requires at least one filter or kinds=true");
   const args: string[] = []; option(args, "--name", p.name); if (p.file !== undefined) option(args, "--file", await projectPath(root, p.file)); option(args, "--kind", p.kind); option(args, "--role", p.role); option(args, "--scope", p.scope); if (p.kinds) args.push("--kinds"); return [...args, ...commonArgs(p, 100)];
 }
 export async function buildDefinitionArgs(root: string, p: Static<typeof schemas.definition>): Promise<string[]> {
+  assertString("name", p.name, true); assertString("from", p.from); assertString("scope", p.scope); assertInteger("maxLines", p.maxLines, 1, 200); assertEnum("kind", p.kind, SYMBOL_KINDS); assertEnum("role", p.role, SYMBOL_ROLES);
   const args = ["--name", p.name]; if (p.from !== undefined) option(args, "--from", await projectPath(root, p.from)); option(args, "--kind", p.kind); option(args, "--role", p.role ?? "definition"); option(args, "--scope", p.scope); option(args, "--max-lines", p.maxLines ?? 200); return [...args, ...commonArgs(p, 3)];
 }
 export async function buildReferencesArgs(root: string, p: Static<typeof schemas.references>): Promise<string[]> {
+  assertString("name", p.name, true); assertString("file", p.file); assertBoolean("context", p.context);
+  if (p.name.includes("::") || p.name.includes(".")) throw new Error("cx_references.name accepts a lexical identifier such as 'load', not a qualified name. Use cx_callers/cx_callees with scope='ANGE::MaterialRegistry::load' for qualified call evidence.");
   const args = ["--name", p.name]; if (p.file !== undefined) option(args, "--file", await projectPath(root, p.file)); if (p.context) args.push("--context"); return [...args, ...commonArgs(p, 50)];
 }
-export function buildRelationArgs(p: Static<typeof schemas.callers>): string[] { const args = ["--name", p.name]; option(args, "--scope", p.scope); return [...args, ...commonArgs(p, 50)]; }
+export function buildRelationArgs(p: Static<typeof schemas.callers>): string[] { assertString("name", p.name, true); assertString("scope", p.scope); const args = ["--name", p.name]; option(args, "--scope", p.scope); return [...args, ...commonArgs(p, 50)]; }
 export function buildMapArgs(p: Static<typeof schemas.map>): string[] {
-  const args = ["--depth", String(p.depth ?? 1)]; if (p.includeVendor) args.push("--include-vendor"); if (p.includeGenerated) args.push("--include-generated"); if (p.tests) args.push("--tests"); for (const glob of p.exclude ?? []) { if (glob.includes("\0")) throw new Error("exclude glob contains NUL"); args.push("--exclude", glob); } return [...args, ...commonArgs(p, 40)];
+  assertInteger("depth", p.depth, 1, 8); assertBoolean("includeVendor", p.includeVendor); assertBoolean("includeGenerated", p.includeGenerated); assertBoolean("tests", p.tests);
+  if (p.exclude !== undefined && (!Array.isArray(p.exclude) || p.exclude.length > 32)) throw new Error("exclude must contain at most 32 globs");
+  const args = ["--depth", String(p.depth ?? 1)]; if (p.includeVendor) args.push("--include-vendor"); if (p.includeGenerated) args.push("--include-generated"); if (p.tests) args.push("--tests"); for (const glob of p.exclude ?? []) { assertString("exclude glob", glob); args.push("--exclude", glob); } return [...args, ...commonArgs(p, 40)];
 }
-export async function buildRefreshArgs(root: string, p: Static<typeof schemas.refresh>): Promise<string[]> { return Promise.all((p.paths ?? []).map((path) => projectPath(root, path, true))); }
+export async function buildRefreshArgs(root: string, p: Static<typeof schemas.refresh>): Promise<string[]> {
+  if (p.paths !== undefined && (!Array.isArray(p.paths) || p.paths.length > 200)) throw new Error("paths must contain at most 200 entries");
+  for (const path of p.paths ?? []) assertString("refresh path", path, true);
+  return Promise.all((p.paths ?? []).map((path) => projectPath(root, path, true)));
+}
 
 const guidance: Record<string, string> = {
   cx_overview: "Use cx_overview before reading a whole source file when only its structure is needed.",
-  cx_symbols: "Use cx_symbols for identifier-oriented discovery; use grep for raw strings, logs, SQL, routes, and generated text.",
-  cx_definition: "Use cx_definition to read one implementation before falling back to a full-file read.",
-  cx_references: "Use cx_references for syntax-classified occurrences; do not treat unresolved edges as resolved.",
+  cx_symbols: "Use cx_symbols for identifier-oriented discovery; name is a glob (use *Material* for related names), and scope matches the complete qualified name (use ANGE::* or ANGE::MaterialRegistry::*). Use grep for raw strings, logs, SQL, routes, and generated text.",
+  cx_definition: "Use cx_definition to read one implementation before falling back to a full-file read; scope matches the complete qualified name, so member lookups need patterns such as ANGE::MaterialRegistry::* or an exact qualified name.",
+  cx_references: "Use cx_references for syntax-classified occurrences and pass a lexical identifier such as load, never a qualified name; use cx_callers/cx_callees with scope for qualified call evidence. Do not treat unresolved edges as resolved.",
   cx_callers: "Use cx_callers/cx_callees for one-hop call evidence; do not treat unresolved edges as resolved.",
   cx_callees: "Use cx_callers/cx_callees for one-hop call evidence; do not treat unresolved edges as resolved.",
   cx_map: "Use cx_map for bounded repository orientation, not as a runtime dependency graph.",
@@ -73,11 +100,12 @@ const guidance: Record<string, string> = {
 };
 
 function renderCall(name: string) { return (rawArgs: unknown, theme: any) => { const args = (rawArgs && typeof rawArgs === "object" ? rawArgs : {}) as Record<string, unknown>; return new Text(theme.fg("toolTitle", theme.bold(`${name} `)) + theme.fg("muted", Object.entries(args).slice(0, 2).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" ")), 0, 0); }; }
-function renderResult(result: any, options: any, theme: any) {
+export function renderCxResult(result: any, options: any, theme: any) {
   if (options.isPartial) return new Text(theme.fg("warning", "querying…"), 0, 0);
+  const raw = result.content?.[0]?.text ?? "";
+  if (options.isError) return new Text(theme.fg("error", options.expanded ? raw : `cx error: ${raw}`), 0, 0);
   const details = result.details ?? {};
-  if (options.expanded) return new Text(result.content?.[0]?.text ?? "", 0, 0);
-  if (details.error) return new Text(theme.fg("error", String(details.error)), 0, 0);
+  if (options.expanded) return new Text(raw, 0, 0);
   return new Text(theme.fg("success", `cx: ${details.resultCount ?? 0} result(s), ${details.durationMs ?? 0}ms, ${details.warningCount ?? 0} warning(s)`), 0, 0);
 }
 
@@ -105,16 +133,16 @@ export function registerCxTools(pi: ExtensionAPI): void {
     };
   }
   const add = (name: string, label: string, description: string, parameters: any, builder: (root: string, p: any) => string[] | Promise<string[]>, promptSnippet: string) => pi.registerTool({
-    name, label, description, parameters, promptSnippet, promptGuidelines: [guidance[name]!], renderCall: renderCall(name), renderResult,
+    name, label, description, parameters, promptSnippet, promptGuidelines: [guidance[name]!], renderCall: renderCall(name), renderResult: renderCxResult,
     async execute(_id: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
       onUpdate?.({ content: [{ type: "text", text: "querying…" }], details: {} });
       const root = await canonicalRoot(ctx.cwd); return execute(name.slice(3), await builder(root, params), signal, ctx);
     },
   });
   add("cx_overview", "cx overview", "Show one directory level or a source file outline. Output is bounded to 50KB/2000 lines.", schemas.overview, buildOverviewArgs, "Inspect a directory or file structure without reading full source");
-  add("cx_symbols", "cx symbols", "Search repository symbols by typed filters; requires a filter or kinds=true.", schemas.symbols, buildSymbolsArgs, "Search identifiers and symbol metadata across the project");
-  add("cx_definition", "cx definition", "Read a symbol implementation body; defaults to role=definition.", schemas.definition, buildDefinitionArgs, "Read one symbol body instead of a whole file");
-  add("cx_references", "cx references", "Find syntax-classified occurrences; this is not compiler type resolution.", schemas.references, buildReferencesArgs, "Find syntax-classified references to a symbol");
+  add("cx_symbols", "cx symbols", "Search repository symbols by typed filters. name is a glob (for example *Material*); scope is matched against the complete qualified name (for example ANGE::MaterialRegistry::*). Requires a filter or kinds=true.", schemas.symbols, buildSymbolsArgs, "Search identifiers and symbol metadata across the project");
+  add("cx_definition", "cx definition", "Read a symbol implementation body; defaults to role=definition. scope must match the complete qualified name, using ::* when selecting members of a parent scope.", schemas.definition, buildDefinitionArgs, "Read one symbol body instead of a whole file");
+  add("cx_references", "cx references", "Find syntax-classified occurrences by lexical identifier. Qualified names are rejected; use cx_callers/cx_callees with scope for qualified call evidence. This is not compiler type resolution.", schemas.references, buildReferencesArgs, "Find syntax-classified references to a symbol");
   add("cx_callers", "cx callers", "Find one-hop callers, preserving unresolved targets and candidates.", schemas.callers, (_r, p) => buildRelationArgs(p), "Find direct callers with resolution evidence");
   add("cx_callees", "cx callees", "Find one-hop callees; ambiguous symbols are not guessed and no multi-hop depth is available.", schemas.callees, (_r, p) => buildRelationArgs(p), "Find direct callees with resolution evidence");
   add("cx_map", "cx map", "Create a bounded repository map preserving ranking and import warnings.", schemas.map, (_r, p) => buildMapArgs(p), "Orient within repository subsystems and import edges");

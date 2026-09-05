@@ -16,6 +16,7 @@ else if(command==='invalid') console.log('bad json');
 else if(command==='schema2') console.log(JSON.stringify({...base,schema_version:2}));
 else if(command==='error'){ console.log(JSON.stringify({...base,error:{code:'file_not_indexed',message:'nope'}})); process.exitCode=1; }
 else if(command==='misuse'){ console.error('bad argv'); process.exitCode=2; }
+else if(command==='locked'){ console.error('cx: failed to open database: Database already open. Cannot acquire lock.'); process.exitCode=1; }
 else if(command==='large'){ base.results=[{body:'x'.repeat(70000)}]; console.log(JSON.stringify(base)); }
 else { base.results=[{argv:process.argv.slice(2),cwd:process.cwd()}]; console.log(JSON.stringify(base)); }
 `); await chmod(binary, 0o755); return { binary, cwd };
@@ -30,6 +31,7 @@ test("distinguishes cx errors, CLI mismatch, and invalid protocol", async () => 
   await assert.rejects(() => runCx({ ...f, command: "misuse" }), ProtocolError);
   await assert.rejects(() => runCx({ ...f, command: "invalid" }), ProtocolError);
   await assert.rejects(() => runCx({ ...f, command: "schema2" }), /incompatible cx schema/);
+  await assert.rejects(() => runCx({ ...f, command: "locked" }), (error: unknown) => error instanceof CxProcessError && /database_locked/.test(error.message));
 });
 test("oversized output remains valid JSON and points to complete output", async () => {
   const f = await fake(); const result = await runCx({ ...f, command: "large" }); const fallback = JSON.parse(result.raw);

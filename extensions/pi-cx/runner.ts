@@ -142,6 +142,9 @@ export async function runCx(options: RunCxOptions): Promise<CxRunResult> {
   }
   await rm(work, { recursive: true, force: true });
   const raw = Buffer.concat(chunks).toString("utf8");
+  if (code !== 0 && /database (?:already open|locked)|cannot acquire lock/i.test(details.stderr)) {
+    throw new CxProcessError(JSON.stringify({ error: { code: "database_locked", message: "cx index remained locked after the bounded wait; retry the query" }, process: { duration_ms: details.durationMs, exit_code: code, killed: details.killed, stderr: details.stderr } }), undefined, details);
+  }
   let envelope: CxEnvelope;
   try { envelope = parseEnvelope(raw); } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

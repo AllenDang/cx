@@ -340,18 +340,28 @@ fn decode_file_entry(bytes: &[u8]) -> Option<FileEntry> {
     bincode::deserialize(bytes).ok()
 }
 
-/// Open the database exclusively, retrying on lock contention.
+/// Open the database exclusively, retrying on lock contention for up to 45 seconds.
+///
+/// Pi and other agent hosts may launch sibling cx queries in parallel. On a
+/// cold cache, one process can spend several seconds building the index while
+/// the others wait. A short fixed retry window turns that normal startup into
+/// a false query failure, so contention uses bounded exponential backoff.
 fn open_db_exclusive(path: &Path) -> Result<Database, redb::DatabaseError> {
-    let mut attempts = 0;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+    let mut delay = std::time::Duration::from_millis(50);
+    let mut announced = false;
     loop {
         match Database::create(path) {
             Ok(db) => return Ok(db),
-            Err(redb::DatabaseError::DatabaseAlreadyOpen) if attempts < 20 => {
-                attempts += 1;
-                if attempts == 1 {
+            Err(redb::DatabaseError::DatabaseAlreadyOpen)
+                if std::time::Instant::now() < deadline =>
+            {
+                if !announced {
                     eprintln!("cx: database locked, waiting...");
+                    announced = true;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(std::time::Duration::from_millis(500));
             }
             Err(e) => return Err(e),
         }
@@ -1064,6 +1074,26 @@ mod tests {
             tree_sitter_language_pack::configure(&config)
                 .expect("failed to configure grammar cache");
         });
+    }
+
+    #[test]
+    fn exclusive_open_waits_for_a_cold_index_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("contended.db");
+        let held = Database::create(&path).unwrap();
+        let waiter_path = path.clone();
+        let waiter = std::thread::spawn(move || open_db_exclusive(&waiter_path));
+
+        // Longer than the old two-second retry window: this mechanically pins
+        // the cold-index contention observed with parallel Pi tool calls.
+        std::thread::sleep(std::time::Duration::from_millis(2_300));
+        drop(held);
+
+        let reopened = waiter.join().unwrap();
+        assert!(
+            reopened.is_ok(),
+            "waiter must acquire the database after the writer exits"
+        );
     }
 
     #[test]

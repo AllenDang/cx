@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { canonicalRoot, projectPath } from "../../extensions/pi-cx/paths.js";
-import { buildDefinitionArgs, buildMapArgs, buildOverviewArgs, buildRefreshArgs, buildSymbolsArgs, schemas } from "../../extensions/pi-cx/tools.js";
+import { buildDefinitionArgs, buildMapArgs, buildOverviewArgs, buildReferencesArgs, buildRefreshArgs, buildSymbolsArgs, renderCxResult, schemas } from "../../extensions/pi-cx/tools.js";
 
 test("schemas expose no root or all and use string enums", () => {
   for (const schema of Object.values(schemas)) {
@@ -23,6 +23,21 @@ test("flag builders map camelCase mechanically and impose limits", async () => {
   assert.deepEqual(buildMapArgs({ includeVendor: true, depth: 2 }).slice(0, 3), ["--depth", "2", "--include-vendor"]);
   await assert.rejects(() => buildSymbolsArgs(root, {}), /requires at least one filter/);
 });
+test("runtime validation enforces bounds and qualified reference guidance", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-cx-validation-")); const root = await canonicalRoot(dir);
+  await assert.rejects(() => buildOverviewArgs(root, { limit: 300 } as any), /limit must be an integer/);
+  assert.throws(() => buildMapArgs({ depth: 9 } as any), /depth must be an integer/);
+  await assert.rejects(() => buildRefreshArgs(root, { paths: Array(201).fill("new.rs") }), /at most 200/);
+  await assert.rejects(() => buildReferencesArgs(root, { name: "ANGE::MaterialRegistry::load" }), /lexical identifier/);
+});
+
+test("renderer presents failed tools as errors rather than empty successes", () => {
+  const theme = { fg: (_color: string, text: string) => text };
+  const component = renderCxResult({ content: [{ type: "text", text: "database locked" }] }, { isPartial: false, isError: true, expanded: false }, theme);
+  assert.match(component.render(200).join("\n"), /cx error: database locked/);
+  assert.doesNotMatch(component.render(200).join("\n"), /0 result/);
+});
+
 test("path normalization blocks traversal and symlink escape", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-cx-root-")); const outside = await mkdtemp(join(tmpdir(), "pi-cx-out-"));
   await mkdir(join(dir, "src")); await writeFile(join(dir, "src", "a.rs"), ""); await symlink(outside, join(dir, "escape"));
