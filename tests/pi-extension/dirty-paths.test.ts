@@ -22,12 +22,13 @@ function payload(root: string, paths: string[]): unknown {
   return { version: 1, source: "hashline_edit", cwd: root, paths };
 }
 
-async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt++) {
+async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (predicate()) return;
-    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error("timed out waiting for test operation");
+  throw new Error(`timed out after ${timeoutMs}ms waiting for test operation`);
 }
 
 function result(command: string, generation: number, paths: string[] = []): CxRunResult {
