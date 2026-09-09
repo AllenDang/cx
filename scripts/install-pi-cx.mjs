@@ -6,13 +6,13 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
-import { byHost, grammarFilename, grammarNames, languagePackVersion } from "./pi-cx-platforms.mjs";
+import { byHost, githubPiAssetUrl, grammarFilename, grammarNames, languagePackVersion, piAssetFilename } from "./pi-cx-platforms.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 const config = byHost();
 const target = config.target, platformDir = config.platformDir, schema = 1;
-const asset = `pi-cx-${target}.tar.gz`;
+const asset = piAssetFilename(target);
 const digest = async (path) => createHash("sha256").update(await readFile(path)).digest("hex");
 const exec = (command, args, cwd) => new Promise((resolve, reject) => {
   const child = spawn(command, args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"] }); const out = [], err = [];
@@ -78,9 +78,8 @@ try {
     if (source === root || relative(source, root) === "") throw new Error("PI_CX_ASSET_DIR must name an explicit staged asset directory");
     await cp(source, stage, { recursive: true, force: false });
   } else {
-    const base = `https://github.com/AllenDang/cx/releases/download/v${pkg.version}`;
     const archivePath = join(work, asset), checksumPath = `${archivePath}.sha256`;
-    for (const [url, path] of [[`${base}/${asset}`, archivePath], [`${base}/${asset}.sha256`, checksumPath]]) {
+    for (const [url, path] of [[githubPiAssetUrl(pkg.version, target), archivePath], [githubPiAssetUrl(pkg.version, target, true), checksumPath]]) {
       await writeFile(path, await download(url, basename(path)), { mode: 0o600 });
     }
     const expected = (await readFile(checksumPath, "utf8")).trim().match(/^([a-fA-F0-9]{64})(?:\s+\*?([^\s]+))?$/);

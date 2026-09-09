@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-09-09
+
 ### Added
+
+- Cross-extension `cx:mark-dirty:v1` notifications let file-mutating Pi extensions request an automatic verified path refresh before the next CX query, without depending on Hashline Edit.
+- Dirty refreshes are deduplicated and serialized per canonical project root, merge with explicit `cx_refresh`, preserve in-flight events, and expose bounded `dirtyRefresh` tool details.
+- Named refresh reads are capability-scoped beneath the project root and verify stable file identity and contents before publishing freshness evidence.
 
 - `pi-cx` Git Pi package with eight typed navigation tools, strict bundled-binary verification, offline grammar seeding, and per-platform release assets for macOS, Linux, and Windows on arm64/x86_64.
 - Cold-cache sibling cx processes now wait with bounded exponential backoff for the index writer instead of failing after two seconds.

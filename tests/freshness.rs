@@ -350,6 +350,35 @@ fn refresh_ignores_paths_outside_the_project() {
         out.json()["freshness"]["files_updated"].as_u64().unwrap(),
         0
     );
+    assert_eq!(out.results().len(), 1);
+    assert_eq!(out.results()[0]["status"].as_str().unwrap(), "outside_root");
+}
+
+#[test]
+fn named_refresh_reports_an_ancestor_replaced_by_an_outside_symlink() {
+    let p = fixture_project(CORPUS);
+    let watched = p.path().join("watched");
+    fs::create_dir(&watched).unwrap();
+    fs::write(watched.join("a.rs"), "fn before() {}\n").unwrap();
+    let _ = run_cx(p.path(), &["--json", "symbols", "--all"]);
+
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("a.rs"), "fn outside() {}\n").unwrap();
+    fs::rename(&watched, p.path().join("watched-old")).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), &watched).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(outside.path(), &watched).unwrap();
+
+    let out = run_cx(p.path(), &["--json", "refresh", "watched/a.rs"]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(out.results().len(), 1, "{}", out.stdout);
+    assert_eq!(out.results()[0]["status"].as_str().unwrap(), "outside_root");
+    assert!(
+        out.stderr.contains("outside the project root"),
+        "{}",
+        out.stderr
+    );
 }
 
 #[test]

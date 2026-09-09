@@ -1,3 +1,7 @@
+use cap_std::{
+    ambient_authority,
+    fs::{Dir, Metadata},
+};
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use redb::{Database, ReadOnlyDatabase, ReadableDatabase, ReadableTable, TableDefinition};
@@ -5,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -46,6 +51,12 @@ pub struct Index {
     pub entries: HashMap<PathBuf, FileData>,
     /// What this process did to establish that the index matches disk.
     pub freshness: Freshness,
+    /// Per-request evidence for `FreshnessMode::Paths`, in request order.
+    /// A failure status means the path was not verified and must not be
+    /// presented as unchanged by `cx refresh`.
+    pub named_path_checks: Vec<NamedPathCheck>,
+    /// Fatal verification or persistence failure for this invocation.
+    pub refresh_error: Option<String>,
     /// Paths re-parsed by this process, in scan order.  Evidence for
     /// `cx refresh`: these files are provably part of `freshness.generation`.
     pub updated: Vec<PathBuf>,
@@ -129,7 +140,7 @@ enum CrawlResult {
     Indexed(PathBuf, FileData),
     MissingLang(String),
     ReadFailed(PathBuf, std::io::Error),
-    ParseFailed,
+    ParseFailed(PathBuf),
 }
 
 #[derive(Debug, Clone)]
@@ -449,6 +460,14 @@ struct DiskFile {
     rel_path: PathBuf,
     mtime: SystemTime,
     lang: &'static str,
+    /// Named refreshes carry bytes read through a capability-scoped file handle,
+    /// closing the canonicalize-then-open symlink race.
+    source: Option<Vec<u8>>,
+}
+
+pub struct NamedPathCheck {
+    pub rel_path: Option<PathBuf>,
+    pub failure: Option<&'static str>,
 }
 
 /// The difference between the index and the working tree.
@@ -457,6 +476,10 @@ struct DiskScan {
     stale: Vec<DiskFile>,
     /// Indexed paths that no longer exist on disk.
     deleted: Vec<PathBuf>,
+    /// Outcome for each named path, in request order. Empty for whole-project scans.
+    named_path_checks: Vec<NamedPathCheck>,
+    /// Fatal whole-project verification failures.
+    failures: Vec<String>,
     /// How many files this scan actually compared.
     files_checked: usize,
     /// Indexable files skipped because their grammar is missing.
@@ -491,6 +514,8 @@ fn scan_disk(
     let mut scan = DiskScan {
         stale: Vec::new(),
         deleted: Vec::new(),
+        named_path_checks: Vec::new(),
+        failures: Vec::new(),
         files_checked: 0,
         skipped_missing_grammar: 0,
     };
@@ -520,8 +545,14 @@ fn scan_disk(
                 let changed = match req.mode {
                     FreshnessMode::Verified => {
                         // Content is the authority; mtime is not consulted.
-                        fs::read(path)
-                            .is_ok_and(|bytes| content_hash(&bytes) != data.meta.content_hash)
+                        match fs::read(path) {
+                            Ok(bytes) => content_hash(&bytes) != data.meta.content_hash,
+                            Err(error) => {
+                                scan.failures
+                                    .push(format!("failed to verify {}: {error}", path.display()));
+                                false
+                            }
+                        }
                     }
                     FreshnessMode::Metadata | FreshnessMode::Paths => {
                         data.meta.mtime() != mtime || data.meta.size != size
@@ -532,6 +563,7 @@ fn scan_disk(
                         rel_path,
                         mtime,
                         lang,
+                        source: None,
                     });
                 }
             }
@@ -545,6 +577,7 @@ fn scan_disk(
                         rel_path,
                         mtime,
                         lang,
+                        source: None,
                     });
                 } else {
                     scan.skipped_missing_grammar += 1;
@@ -563,6 +596,87 @@ fn scan_disk(
     scan
 }
 
+fn metadata_mtime(metadata: &Metadata) -> SystemTime {
+    metadata
+        .modified()
+        .map(cap_std::time::SystemTime::into_std)
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+#[cfg(unix)]
+fn same_file_identity(left: &Metadata, right: &Metadata) -> bool {
+    use cap_std::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(windows)]
+fn same_file_identity(left: &Metadata, right: &Metadata) -> bool {
+    use cap_std::fs::MetadataExt;
+    left.volume_serial_number().is_some()
+        && left.volume_serial_number() == right.volume_serial_number()
+        && left.file_index().is_some()
+        && left.file_index() == right.file_index()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_file_identity(left: &Metadata, right: &Metadata) -> bool {
+    left.len() == right.len() && metadata_mtime(left) == metadata_mtime(right)
+}
+
+fn stable_metadata(left: &Metadata, right: &Metadata) -> bool {
+    same_file_identity(left, right)
+        && left.len() == right.len()
+        && metadata_mtime(left) == metadata_mtime(right)
+}
+
+fn changed_during_refresh() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "named path changed identity or content during refresh",
+    )
+}
+
+fn read_beneath(root: &Path, rel_path: &Path) -> std::io::Result<(Vec<u8>, SystemTime)> {
+    read_beneath_with_hook(root, rel_path, || {})
+}
+
+fn read_beneath_with_hook(
+    root: &Path,
+    rel_path: &Path,
+    after_first_read: impl FnOnce(),
+) -> std::io::Result<(Vec<u8>, SystemTime)> {
+    let dir = Dir::open_ambient_dir(root, ambient_authority())?;
+    let mut file = dir.open(rel_path)?;
+    let before = file.metadata()?;
+    let mut source = Vec::new();
+    file.read_to_end(&mut source)?;
+    let after = file.metadata()?;
+    if !stable_metadata(&before, &after) || after.len() != source.len() as u64 {
+        return Err(changed_during_refresh());
+    }
+
+    after_first_read();
+
+    // Reopen through the same capability after reading. This proves that the
+    // request path still names the same file and that a second stable read sees
+    // the same bytes; a rename/symlink swap or in-place concurrent write fails.
+    let mut current = dir.open(rel_path)?;
+    let current_before = current.metadata()?;
+    if !same_file_identity(&after, &current_before) {
+        return Err(changed_during_refresh());
+    }
+    let mut current_source = Vec::new();
+    current.read_to_end(&mut current_source)?;
+    let current_after = current.metadata()?;
+    if !stable_metadata(&current_before, &current_after)
+        || current_after.len() != current_source.len() as u64
+        || current_source != source
+    {
+        return Err(changed_during_refresh());
+    }
+    Ok((source, metadata_mtime(&current_after)))
+}
+
 /// `paths` mode: check exactly the paths the caller named, by content hash.
 ///
 /// This is the mechanical guarantee an agent needs after editing files: name
@@ -575,6 +689,8 @@ fn scan_named_paths(
     let mut scan = DiskScan {
         stale: Vec::new(),
         deleted: Vec::new(),
+        named_path_checks: Vec::with_capacity(paths.len()),
+        failures: Vec::new(),
         files_checked: 0,
         skipped_missing_grammar: 0,
     };
@@ -586,40 +702,61 @@ fn scan_named_paths(
                 "cx: {} is outside the project root, skipping",
                 requested.display()
             );
+            scan.named_path_checks.push(NamedPathCheck {
+                rel_path: None,
+                failure: Some("outside_root"),
+            });
             continue;
         };
         let rel_path = rel_path.to_path_buf();
+        scan.named_path_checks.push(NamedPathCheck {
+            rel_path: Some(rel_path.clone()),
+            failure: None,
+        });
         scan.files_checked += 1;
 
-        if !abs.exists() {
-            if entries.contains_key(&rel_path) {
-                scan.deleted.push(rel_path);
+        let existed = abs.exists();
+        let (source, mtime) = match read_beneath(root, &rel_path) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !existed => {
+                if entries.contains_key(&rel_path) {
+                    scan.deleted.push(rel_path);
+                }
+                continue;
             }
-            continue;
-        }
+            Err(error) => {
+                eprintln!(
+                    "cx: failed to securely read {}: {error}",
+                    requested.display()
+                );
+                if let Some(check) = scan.named_path_checks.last_mut() {
+                    check.failure = Some("read_failed");
+                }
+                continue;
+            }
+        };
 
         let Some(lang) = detect_language(&abs) else {
             eprintln!("cx: {} has no known grammar, skipping", requested.display());
             scan.skipped_missing_grammar += 1;
+            if let Some(check) = scan.named_path_checks.last_mut() {
+                check.failure = Some("unsupported_file_type");
+            }
             continue;
         };
 
-        let metadata = fs::metadata(&abs).ok();
-        let mtime = metadata
-            .as_ref()
-            .and_then(|m| m.modified().ok())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-
-        // Content hash is the authority here: an agent that names a path after
-        // editing it must get a re-parse even if size and mtime look unchanged.
-        let unchanged = entries.get(&rel_path).is_some_and(|data| {
-            fs::read(&abs).is_ok_and(|bytes| content_hash(&bytes) == data.meta.content_hash)
-        });
+        // Content hash is the authority here. The bytes came from a file
+        // handle opened beneath the canonical root, not from a path reopened
+        // after validation.
+        let unchanged = entries
+            .get(&rel_path)
+            .is_some_and(|data| content_hash(&source) == data.meta.content_hash);
         if !unchanged {
             scan.stale.push(DiskFile {
                 rel_path,
                 mtime,
                 lang,
+                source: Some(source),
             });
         }
     }
@@ -664,6 +801,9 @@ impl Index {
                                 db: None,
                                 entries,
                                 freshness,
+                                named_path_checks: scan.named_path_checks,
+                                refresh_error: (!scan.failures.is_empty())
+                                    .then(|| scan.failures.join("; ")),
                                 updated: Vec::new(),
                                 removed: Vec::new(),
                             };
@@ -710,6 +850,8 @@ impl Index {
                     generation,
                     ..Freshness::empty(req.mode)
                 },
+                named_path_checks: Vec::new(),
+                refresh_error: None,
                 updated: Vec::new(),
                 removed: Vec::new(),
             };
@@ -722,11 +864,17 @@ impl Index {
                 db: Some(db),
                 entries: HashMap::new(),
                 freshness: Freshness::empty(req.mode),
+                named_path_checks: Vec::new(),
+                refresh_error: None,
                 updated: Vec::new(),
                 removed: Vec::new(),
             };
             idx.full_crawl();
             idx.save_all();
+            if idx.refresh_error.is_none() && req.mode == FreshnessMode::Paths {
+                let scan = scan_named_paths(root, &idx.entries, &req.paths);
+                idx.apply_scan(scan);
+            }
             idx
         }
     }
@@ -778,7 +926,7 @@ impl Index {
                             },
                         ),
                         Err(LangError::NotInstalled(name)) => CrawlResult::MissingLang(name),
-                        Err(_) => CrawlResult::ParseFailed,
+                        Err(_) => CrawlResult::ParseFailed(abs_path.clone()),
                     },
                     Err(e) => CrawlResult::ReadFailed(abs_path.clone(), e),
                 };
@@ -794,6 +942,7 @@ impl Index {
             })
             .collect();
 
+        let mut crawl_failures = Vec::new();
         for result in results {
             match result {
                 CrawlResult::Indexed(rel_path, data) => {
@@ -804,8 +953,11 @@ impl Index {
                 }
                 CrawlResult::ReadFailed(path, e) => {
                     eprintln!("cx: warning: failed to read {}: {}", path.display(), e);
+                    crawl_failures.push(format!("failed to read {}: {e}", path.display()));
                 }
-                CrawlResult::ParseFailed => {}
+                CrawlResult::ParseFailed(path) => {
+                    crawl_failures.push(format!("failed to parse {}", path.display()));
+                }
             }
         }
 
@@ -813,6 +965,9 @@ impl Index {
         self.freshness.files_checked = total;
         self.freshness.files_updated = self.entries.len();
         self.freshness.files_skipped_missing_grammar = missing_langs.values().sum();
+        if !crawl_failures.is_empty() {
+            self.refresh_error = Some(crawl_failures.join("; "));
+        }
 
         // UX: warn about missing grammars
         if !missing_langs.is_empty() {
@@ -842,8 +997,9 @@ impl Index {
     ///
     /// Freshness counters are recorded here so a query can report exactly how
     /// many files this process checked and updated (roadmap §4.4).
-    fn apply_scan(&mut self, scan: DiskScan) {
+    fn apply_scan(&mut self, mut scan: DiskScan) {
         let mut missing_langs: HashSet<String> = HashSet::new();
+        let mut failed_paths: HashMap<PathBuf, &'static str> = HashMap::new();
 
         for path in &scan.deleted {
             self.entries.remove(path);
@@ -860,16 +1016,27 @@ impl Index {
                 eprintln!("cx: indexed {}/{}...", i + 1, total);
             }
             let abs_path = self.root.join(&file.rel_path);
-            let Ok(source) = fs::read(&abs_path) else {
-                continue;
+            let source = match &file.source {
+                Some(source) => source.clone(),
+                None => match fs::read(&abs_path) {
+                    Ok(source) => source,
+                    Err(_) => {
+                        failed_paths.insert(file.rel_path.clone(), "read_failed");
+                        continue;
+                    }
+                },
             };
             let parse = match parse_and_extract(file.lang, &source, &abs_path) {
                 Ok(parse) => parse,
                 Err(LangError::NotInstalled(name)) => {
                     missing_langs.insert(name);
+                    failed_paths.insert(file.rel_path.clone(), "missing_grammar");
                     continue;
                 }
-                Err(_) => continue,
+                Err(_) => {
+                    failed_paths.insert(file.rel_path.clone(), "parse_failed");
+                    continue;
+                }
             };
             self.entries.insert(
                 file.rel_path.clone(),
@@ -894,139 +1061,192 @@ impl Index {
             eprintln!("cx: skipping .{ext} files — install with: cx lang add {lang}");
         }
 
+        for check in &mut scan.named_path_checks {
+            if let Some(path) = &check.rel_path {
+                if let Some(failure) = failed_paths.get(path) {
+                    check.failure = Some(*failure);
+                }
+            }
+        }
+        self.named_path_checks = std::mem::take(&mut scan.named_path_checks);
         self.freshness.files_checked = scan.files_checked;
-        self.freshness.files_updated = changed_paths.len();
-        self.freshness.files_removed = scan.deleted.len();
         self.freshness.files_skipped_missing_grammar =
             scan.skipped_missing_grammar + missing_langs.len();
-        self.updated = changed_paths.clone();
-        self.removed = scan.deleted.clone();
+        self.freshness.files_updated = 0;
+        self.freshness.files_removed = 0;
+        self.updated.clear();
+        self.removed.clear();
+
+        let mut refresh_failures = scan.failures;
+        for (path, failure) in &failed_paths {
+            refresh_failures.push(format!("{}: {failure}", path.display()));
+        }
+        self.refresh_error = (!refresh_failures.is_empty()).then(|| refresh_failures.join("; "));
 
         if scan.deleted.is_empty() && changed_paths.is_empty() {
             return;
         }
 
         let next_generation = self.freshness.generation + 1;
-        let Some(ref db) = self.db else { return };
-        let write_txn = match db.begin_write() {
-            Ok(txn) => txn,
-            Err(e) => {
-                eprintln!("cx: failed to begin write for incremental update: {e}");
-                return;
-            }
-        };
-        {
-            let Ok(mut files_table) = write_txn.open_table(FILES_TABLE) else {
-                eprintln!("cx: failed to open files table — rebuild with: cx cache clean");
-                return;
-            };
-            let Ok(mut syms_table) = write_txn.open_table(SYMBOLS_TABLE) else {
-                eprintln!("cx: failed to open symbols table — rebuild with: cx cache clean");
-                return;
-            };
-            let Ok(mut imports_table) = write_txn.open_table(IMPORTS_TABLE) else {
-                eprintln!("cx: failed to open imports table — rebuild with: cx cache clean");
-                return;
-            };
-            for path in &scan.deleted {
-                let key = path.to_string_lossy();
-                let _ = files_table.remove(key.as_ref());
-                let _ = syms_table.remove(key.as_ref());
-                let _ = imports_table.remove(key.as_ref());
-            }
-            for path in &changed_paths {
-                if let Some(data) = self.entries.get(path) {
+        let persist_result = (|| -> Result<(), String> {
+            let db = self
+                .db
+                .as_ref()
+                .ok_or_else(|| "index database is unavailable".to_string())?;
+            let write_txn = db
+                .begin_write()
+                .map_err(|error| format!("failed to begin index write: {error}"))?;
+            {
+                let mut files_table = write_txn
+                    .open_table(FILES_TABLE)
+                    .map_err(|error| format!("failed to open files table: {error}"))?;
+                let mut syms_table = write_txn
+                    .open_table(SYMBOLS_TABLE)
+                    .map_err(|error| format!("failed to open symbols table: {error}"))?;
+                let mut imports_table = write_txn
+                    .open_table(IMPORTS_TABLE)
+                    .map_err(|error| format!("failed to open imports table: {error}"))?;
+                for path in &scan.deleted {
                     let key = path.to_string_lossy();
-                    match bincode::serialize(&data.symbols) {
-                        Ok(sym_bytes) => {
-                            let entry_bytes = encode_file_entry(&data.meta);
-                            let _ = files_table.insert(key.as_ref(), entry_bytes.as_slice());
-                            let _ = syms_table.insert(key.as_ref(), sym_bytes.as_slice());
-                        }
-                        Err(e) => eprintln!("cx: failed to serialize symbols for {key}: {e}"),
-                    }
-                    if let Ok(import_bytes) = bincode::serialize(&data.imports) {
-                        let _ = imports_table.insert(key.as_ref(), import_bytes.as_slice());
+                    files_table
+                        .remove(key.as_ref())
+                        .map_err(|error| format!("failed to remove file row {key}: {error}"))?;
+                    syms_table
+                        .remove(key.as_ref())
+                        .map_err(|error| format!("failed to remove symbol row {key}: {error}"))?;
+                    imports_table
+                        .remove(key.as_ref())
+                        .map_err(|error| format!("failed to remove import row {key}: {error}"))?;
+                }
+                for path in &changed_paths {
+                    if let Some(data) = self.entries.get(path) {
+                        let key = path.to_string_lossy();
+                        let sym_bytes = bincode::serialize(&data.symbols).map_err(|error| {
+                            format!("failed to serialize symbols for {key}: {error}")
+                        })?;
+                        let import_bytes = bincode::serialize(&data.imports).map_err(|error| {
+                            format!("failed to serialize imports for {key}: {error}")
+                        })?;
+                        let entry_bytes = encode_file_entry(&data.meta);
+                        files_table
+                            .insert(key.as_ref(), entry_bytes.as_slice())
+                            .map_err(|error| format!("failed to write file row {key}: {error}"))?;
+                        syms_table
+                            .insert(key.as_ref(), sym_bytes.as_slice())
+                            .map_err(|error| {
+                                format!("failed to write symbol row {key}: {error}")
+                            })?;
+                        imports_table
+                            .insert(key.as_ref(), import_bytes.as_slice())
+                            .map_err(|error| {
+                                format!("failed to write import row {key}: {error}")
+                            })?;
                     }
                 }
             }
-        }
-        if let Ok(mut meta) = write_txn.open_table(META_TABLE) {
-            let _ = meta.insert("generation", next_generation.to_le_bytes().as_slice());
-        }
-        if let Err(e) = write_txn.commit() {
-            eprintln!("cx: failed to commit incremental update: {e}");
+            {
+                let mut meta = write_txn
+                    .open_table(META_TABLE)
+                    .map_err(|error| format!("failed to open metadata table: {error}"))?;
+                meta.insert("generation", next_generation.to_le_bytes().as_slice())
+                    .map_err(|error| format!("failed to write generation: {error}"))?;
+            }
+            write_txn
+                .commit()
+                .map_err(|error| format!("failed to commit index update: {error}"))?;
+            Ok(())
+        })();
+
+        if let Err(error) = persist_result {
+            eprintln!("cx: {error}");
+            self.refresh_error = Some(error);
+            for check in &mut self.named_path_checks {
+                if check.failure.is_none() {
+                    check.failure = Some("persist_failed");
+                }
+            }
             return;
         }
+
         self.freshness.generation = next_generation;
+        self.freshness.files_updated = changed_paths.len();
+        self.freshness.files_removed = scan.deleted.len();
+        self.updated = changed_paths;
+        self.removed = scan.deleted;
     }
 
     /// Write the entire index to the database (used after `full_crawl`).
     /// Clears all existing data first to avoid stale entries.
     fn save_all(&mut self) {
         let next_generation = self.freshness.generation + 1;
-        let Some(ref db) = self.db else { return };
-        let write_txn = match db.begin_write() {
-            Ok(txn) => txn,
-            Err(e) => {
-                eprintln!("cx: failed to begin write: {e}");
-                return;
+        let persist_result = (|| -> Result<(), String> {
+            let db = self
+                .db
+                .as_ref()
+                .ok_or_else(|| "index database is unavailable".to_string())?;
+            let write_txn = db
+                .begin_write()
+                .map_err(|error| format!("failed to begin index rebuild: {error}"))?;
+
+            // Missing tables are expected for a cold database; all subsequent
+            // opens/inserts are checked.
+            let _ = write_txn.delete_table(FILES_TABLE);
+            let _ = write_txn.delete_table(SYMBOLS_TABLE);
+            let _ = write_txn.delete_table(IMPORTS_TABLE);
+            {
+                let mut table = write_txn
+                    .open_table(META_TABLE)
+                    .map_err(|error| format!("failed to open metadata table: {error}"))?;
+                table
+                    .insert("version", INDEX_VERSION.to_le_bytes().as_slice())
+                    .map_err(|error| format!("failed to write index version: {error}"))?;
+                table
+                    .insert("generation", next_generation.to_le_bytes().as_slice())
+                    .map_err(|error| format!("failed to write generation: {error}"))?;
             }
-        };
-
-        // Delete and recreate tables to clear stale entries
-        let _ = write_txn.delete_table(FILES_TABLE);
-        let _ = write_txn.delete_table(SYMBOLS_TABLE);
-        let _ = write_txn.delete_table(IMPORTS_TABLE);
-
-        // Write version
-        {
-            let Ok(mut table) = write_txn.open_table(META_TABLE) else {
-                eprintln!("cx: failed to open meta table — rebuild with: cx cache clean");
-                return;
-            };
-            let _ = table.insert("version", INDEX_VERSION.to_le_bytes().as_slice());
-            // A rebuild is still a new generation, so a reader can tell that the
-            // index it saw before is not the one answering now.
-            let _ = table.insert("generation", next_generation.to_le_bytes().as_slice());
-        }
-
-        // Write files, symbols and imports
-        {
-            let Ok(mut files_table) = write_txn.open_table(FILES_TABLE) else {
-                eprintln!("cx: failed to open files table — rebuild with: cx cache clean");
-                return;
-            };
-            let Ok(mut syms_table) = write_txn.open_table(SYMBOLS_TABLE) else {
-                eprintln!("cx: failed to open symbols table — rebuild with: cx cache clean");
-                return;
-            };
-            let Ok(mut imports_table) = write_txn.open_table(IMPORTS_TABLE) else {
-                eprintln!("cx: failed to open imports table — rebuild with: cx cache clean");
-                return;
-            };
-            for (path, data) in &self.entries {
-                let key = path.to_string_lossy();
-                let entry_bytes = encode_file_entry(&data.meta);
-                let _ = files_table.insert(key.as_ref(), entry_bytes.as_slice());
-                match bincode::serialize(&data.symbols) {
-                    Ok(sym_bytes) => {
-                        let _ = syms_table.insert(key.as_ref(), sym_bytes.as_slice());
-                    }
-                    Err(e) => eprintln!("cx: failed to serialize symbols for {key}: {e}"),
-                }
-                if let Ok(import_bytes) = bincode::serialize(&data.imports) {
-                    let _ = imports_table.insert(key.as_ref(), import_bytes.as_slice());
+            {
+                let mut files_table = write_txn
+                    .open_table(FILES_TABLE)
+                    .map_err(|error| format!("failed to open files table: {error}"))?;
+                let mut syms_table = write_txn
+                    .open_table(SYMBOLS_TABLE)
+                    .map_err(|error| format!("failed to open symbols table: {error}"))?;
+                let mut imports_table = write_txn
+                    .open_table(IMPORTS_TABLE)
+                    .map_err(|error| format!("failed to open imports table: {error}"))?;
+                for (path, data) in &self.entries {
+                    let key = path.to_string_lossy();
+                    let entry_bytes = encode_file_entry(&data.meta);
+                    let sym_bytes = bincode::serialize(&data.symbols).map_err(|error| {
+                        format!("failed to serialize symbols for {key}: {error}")
+                    })?;
+                    let import_bytes = bincode::serialize(&data.imports).map_err(|error| {
+                        format!("failed to serialize imports for {key}: {error}")
+                    })?;
+                    files_table
+                        .insert(key.as_ref(), entry_bytes.as_slice())
+                        .map_err(|error| format!("failed to write file row {key}: {error}"))?;
+                    syms_table
+                        .insert(key.as_ref(), sym_bytes.as_slice())
+                        .map_err(|error| format!("failed to write symbol row {key}: {error}"))?;
+                    imports_table
+                        .insert(key.as_ref(), import_bytes.as_slice())
+                        .map_err(|error| format!("failed to write import row {key}: {error}"))?;
                 }
             }
-        }
+            write_txn
+                .commit()
+                .map_err(|error| format!("failed to commit index rebuild: {error}"))?;
+            Ok(())
+        })();
 
-        if let Err(e) = write_txn.commit() {
-            eprintln!("cx: failed to commit: {e}");
-            return;
+        match persist_result {
+            Ok(()) => self.freshness.generation = next_generation,
+            Err(error) => {
+                eprintln!("cx: {error}");
+                self.refresh_error = Some(error);
+            }
         }
-        // Only claim the new generation once it is durably committed.
-        self.freshness.generation = next_generation;
     }
 }
 
@@ -1235,6 +1455,8 @@ mod tests {
             db: Some(db),
             entries: HashMap::new(),
             freshness: Freshness::empty(FreshnessMode::Metadata),
+            named_path_checks: Vec::new(),
+            refresh_error: None,
             updated: Vec::new(),
             removed: Vec::new(),
         };
@@ -1619,5 +1841,60 @@ mod tests {
                 .iter()
                 .any(|s| s.name == "Bar" && s.kind == SymbolKind::Struct)
         );
+    }
+    #[test]
+    fn capability_read_refuses_an_outside_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("a.rs"), "fn outside() {}\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), root.path().join("escape")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(outside.path(), root.path().join("escape")).unwrap();
+
+        assert!(read_beneath(root.path(), Path::new("escape/a.rs")).is_err());
+    }
+
+    #[test]
+    fn capability_read_rejects_path_replacement_after_open() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("a.rs");
+        fs::write(&path, "fn old() {}\n").unwrap();
+
+        let result = read_beneath_with_hook(root.path(), Path::new("a.rs"), || {
+            fs::rename(&path, root.path().join("old-a.rs")).unwrap();
+            fs::write(&path, "fn new() {}\n").unwrap();
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn named_refresh_does_not_publish_success_when_persistence_fails() {
+        init_grammar_cache();
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.rs"), "fn changed() {}\n").unwrap();
+        let root = crate::util::path::canonical(dir.path());
+        let mut idx = Index {
+            root: root.clone(),
+            db: None,
+            entries: HashMap::new(),
+            freshness: Freshness::empty(FreshnessMode::Paths),
+            named_path_checks: Vec::new(),
+            refresh_error: None,
+            updated: Vec::new(),
+            removed: Vec::new(),
+        };
+        let scan = scan_named_paths(&root, &idx.entries, &[root.join("a.rs")]);
+        idx.apply_scan(scan);
+
+        assert!(
+            idx.refresh_error
+                .as_deref()
+                .is_some_and(|e| e.contains("unavailable"))
+        );
+        assert_eq!(idx.named_path_checks[0].failure, Some("persist_failed"));
+        assert!(idx.updated.is_empty());
+        assert_eq!(idx.freshness.files_updated, 0);
     }
 }

@@ -17,14 +17,35 @@ test("platform matrix covers all release targets with native filenames", () => {
   assert.throws(() => currentPlatformConfig("freebsd", "x64"), /does not support/);
 });
 
+test("release matrix and installer URL helpers agree on every platform asset", async () => {
+  // @ts-expect-error Release scripts are plain ESM and intentionally have no declaration file.
+  const release = await import("../../scripts/pi-cx-platforms.mjs") as any;
+  const workflow = await readFile(".github/workflows/release.yml", "utf8");
+  const pkg = JSON.parse(await readFile("package.json", "utf8"));
+  assert.equal(release.platforms.length, 6);
+  for (const platform of release.platforms) {
+    const asset = `pi-cx-${platform.target}.tar.gz`;
+    assert.equal(release.piAssetFilename(platform.target), asset);
+    assert.equal(
+      release.githubPiAssetUrl(pkg.version, platform.target),
+      `https://github.com/AllenDang/cx/releases/download/v${pkg.version}/${asset}`,
+    );
+    assert.equal(release.githubPiAssetUrl(pkg.version, platform.target, true), `https://github.com/AllenDang/cx/releases/download/v${pkg.version}/${asset}.sha256`);
+    assert.match(workflow, new RegExp(`target: ${platform.target.replaceAll("-", "\\-")}`));
+  }
+});
+
 test("extension factory uses only load-safe registration methods", () => {
-  const tools: any[] = [], commands: string[] = [];
+  const tools: any[] = [], commands: string[] = [], handlers: string[] = [], eventChannels: string[] = [];
   const api: any = {
     registerTool(tool: any) { tools.push(tool); }, registerCommand(name: string) { commands.push(name); }, registerEntryRenderer() {},
+    on(name: string) { handlers.push(name); }, events: { on(name: string) { eventChannels.push(name); return () => {}; } },
     getActiveTools() { throw new Error("action method called during extension loading"); },
     setActiveTools() { throw new Error("action method called during extension loading"); },
   };
   assert.doesNotThrow(() => piCx(api));
   assert.deepEqual(tools.map(t => t.name), ["cx_overview", "cx_symbols", "cx_definition", "cx_references", "cx_callers", "cx_callees", "cx_map", "cx_refresh"]);
   assert.deepEqual(commands, ["cx-status"]); assert.ok(tools.every(t => !Object.hasOwn(t.parameters.properties, "root")));
+  assert.deepEqual(eventChannels, ["cx:mark-dirty:v1"]);
+  assert.deepEqual(handlers, ["session_start", "session_shutdown"]);
 });

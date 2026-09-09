@@ -1,7 +1,7 @@
 import { currentPlatformConfig } from "./platform.js";
 
 export const PACKAGE_NAME = "pi-cx";
-export const PACKAGE_VERSION = "0.7.8";
+export const PACKAGE_VERSION = "0.7.9";
 export const CX_SCHEMA_VERSION = 1;
 export const ASSET_FORMAT_VERSION = 1;
 export const LANGUAGE_PACK_VERSION = "1.16.1";

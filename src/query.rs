@@ -1009,6 +1009,19 @@ struct RefreshRow {
 /// changes landed in.  A later query reporting the same generation is then
 /// proof that the edit is included.
 pub fn refresh_report(index: &Index, requested: &[PathBuf], json: bool) -> i32 {
+    if let Some(error) = &index.refresh_error {
+        if json {
+            print_error_json(
+                QueryInfo::new("refresh", None),
+                index.freshness.clone(),
+                ErrorCode::RefreshFailed,
+                error,
+            );
+        } else {
+            eprintln!("cx: refresh failed: {error}");
+        }
+        return 1;
+    }
     let mut rows: Vec<RefreshRow> = Vec::new();
 
     if requested.is_empty() {
@@ -1026,9 +1039,17 @@ pub fn refresh_report(index: &Index, requested: &[PathBuf], json: bool) -> i32 {
             });
         }
     } else {
-        for path in requested {
+        for (position, path) in requested.iter().enumerate() {
             let rel = make_relative(path, &index.root);
-            let status = if index.updated.contains(&rel) {
+            let status = if let Some(failure) = index
+                .named_path_checks
+                .get(position)
+                .and_then(|check| check.failure)
+            {
+                failure
+            } else if index.named_path_checks.get(position).is_none() {
+                "unverified"
+            } else if index.updated.contains(&rel) {
                 "updated"
             } else if index.removed.contains(&rel) {
                 "removed"

@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-pi install git:github.com/AllenDang/cx@v0.7.8
+pi install git:github.com/AllenDang/cx@v0.7.9
 ```
 
 The package supports macOS, Linux, and Windows on arm64 and x86_64. Installation selects the asset matching the current OS and architecture, verifies the archive and every manifest file, then installs it under a platform-specific `vendor/pi-cx/<platform>-<arch>` directory. Installation runs native code verification and requires network access. Review package source before installation.
@@ -24,6 +24,21 @@ The package supports macOS, Linux, and Windows on arm64 and x86_64. Installation
 | `cx_refresh` | Explicit verified refresh after edits |
 
 Every query is rooted at the current Pi session's canonical `ctx.cwd`; tools do not accept a root argument. Path and symlink escapes are rejected. Results preserve cx's schema-v1 JSON envelope. cx evidence is syntax-oriented and does not claim compiler-level semantic resolution.
+
+## Cross-extension dirty paths
+
+File-mutating extensions can request a verified refresh before the next CX query without depending on pi-cx:
+
+```ts
+pi.events.emit("cx:mark-dirty:v1", {
+  version: 1,
+  source: "my-edit-extension",
+  cwd: ctx.cwd,
+  paths: ["/absolute/project/src/file.ts"],
+});
+```
+
+pi-cx accepts only valid paths inside the current canonical project root, rejects NUL, oversized payloads, excessive path depth, and symlink escapes, and deduplicates pending paths. Events are bounded to 200 paths before any filesystem canonicalization. Named CX reads use capability-scoped file handles beneath the canonical root, so path components cannot be swapped to escape between validation and read. Before the next `cx_overview`, `cx_symbols`, `cx_definition`, `cx_references`, `cx_callers`, `cx_callees`, or `cx_map` call, it serializes a path refresh ahead of the query. A named refresh must return one valid status row per requested path, and index persistence must commit successfully; otherwise the paths stay pending and the potentially stale query does not run. `cx_refresh` merges explicit paths with pending paths; an empty explicit path list performs a full verified refresh followed by named proof of the pending snapshot. Dirty paths are session-local and are cleared at session shutdown.
 
 ## Cache and grammars
 

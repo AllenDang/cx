@@ -69,6 +69,8 @@ pub enum ErrorCode {
     UnsupportedFileType,
     /// A directory scope matched no indexed files.
     NoIndexedFiles,
+    /// A requested refresh could not verify or persist the index safely.
+    RefreshFailed,
     /// A grammar needed to answer the query is not installed.
     GrammarNotInstalled,
 }

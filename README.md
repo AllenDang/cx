@@ -33,7 +33,7 @@ irm https://raw.githubusercontent.com/ind-igo/cx/master/install.ps1 | iex
 This repository is also a Git Pi package named `pi-cx` for macOS, Linux, and Windows on arm64 and x86_64:
 
 ```bash
-pi install git:github.com/AllenDang/cx@v0.7.8
+pi install git:github.com/AllenDang/cx@v0.7.9
 ```
 
 It registers eight strongly typed `cx_*` tools and the read-only `/cx-status` diagnostic. The package downloads a version-pinned release asset during installation, verifies the bundled cx binary and Tree-sitter grammars, and uses cx's standard shared cache. It never falls back to a host `cx` on `PATH`. See [`extensions/pi-cx/README.md`](extensions/pi-cx/README.md) for security, cache, grammar, and troubleshooting details.

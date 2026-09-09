@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { byHost, byTarget, grammarFilename, grammarNames, languagePackVersion } from "./pi-cx-platforms.mjs";
+import { byHost, byTarget, grammarFilename, grammarNames, languagePackVersion, piAssetFilename } from "./pi-cx-platforms.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
@@ -66,7 +66,7 @@ try {
   }
   await exec(process.execPath, [join(root, "scripts", "make-pi-cx-manifest.mjs"), stage, pkg.version, target, languagePackVersion], root);
   await mkdir(out, { recursive: true });
-  const archive = join(out, `pi-cx-${target}.tar.gz`), temporaryArchive = join(work, "pi-cx-asset.tar.gz");
+  const archive = join(out, piAssetFilename(target)), temporaryArchive = join(work, "pi-cx-asset.tar.gz");
   await exec("tar", ["-czf", "pi-cx-asset.tar.gz", "-C", "stage", "manifest.json", "bin", "grammars"], work);
   await copyFile(temporaryArchive, archive);
   await writeFile(`${archive}.sha256`, `${await digestFile(archive)}  ${basename(archive)}\n`);

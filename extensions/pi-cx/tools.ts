@@ -8,6 +8,7 @@ import { ensureBundledGrammars } from "./grammars.js";
 import { canonicalRoot, projectPath } from "./paths.js";
 import { CxProcessError, runCx, runCxMaintenance } from "./runner.js";
 import { missingGrammarLanguage } from "./protocol.js";
+import { DirtyPathCoordinator } from "./dirty-paths.js";
 
 const common = {
   noTests: Type.Optional(Type.Boolean({ description: "Exclude test files and test symbols" })),
@@ -109,34 +110,99 @@ export function renderCxResult(result: any, options: any, theme: any) {
   return new Text(theme.fg("success", `cx: ${details.resultCount ?? 0} result(s), ${details.durationMs ?? 0}ms, ${details.warningCount ?? 0} warning(s)`), 0, 0);
 }
 
-export function registerCxTools(pi: ExtensionAPI): void {
-  async function execute(command: string, args: string[], signal: AbortSignal | undefined, ctx: any): Promise<any> {
-    const root = await canonicalRoot(ctx.cwd);
-    const validated = await validateBundledBinary();
-    await ensureBundledGrammars(validated.manifest);
-    const invoke = () => runCx({ binary: validated.binary, binaryVersion: validated.version, cwd: root, command, args, signal });
-    let result: CxRunResult;
-    try { result = await invoke(); } catch (error) {
-      if (!(error instanceof CxProcessError) || !error.envelope) throw error;
-      const language = missingGrammarLanguage(error.envelope, error.details?.stderr);
-      if (!language) throw error;
-      if ((BUNDLED_LANGUAGES as readonly string[]).includes(language)) throw new Error(`bundled grammar '${language}' is unavailable after repair; reinstall pi-cx`);
-      if (!ctx.hasUI) throw new Error(JSON.stringify({ error: { code: "grammar_not_installed", language, fix: `${validated.binary} lang add ${language}` } }));
-      const confirmed = await ctx.ui.confirm("Missing cx grammar", `Install missing cx grammar '${language}' from the network?`);
-      if (!confirmed) throw new Error(JSON.stringify({ error: { code: "grammar_not_installed", language, fix: `${validated.binary} lang add ${language}` } }));
-      await runCxMaintenance(validated.binary, root, ["lang", "add", language], signal);
-      result = await invoke(); result.details.grammarInstalled = language; result.details.retried = true;
-    }
-    return {
-      content: [{ type: "text", text: result.raw }],
-      details: { ...result.details, resultCount: result.envelope.results?.length ?? 0, warningCount: result.envelope.warnings?.length ?? 0, freshness: result.envelope.freshness },
-    };
+export interface CxToolRuntime {
+  validateBinary: typeof validateBundledBinary;
+  ensureGrammars: typeof ensureBundledGrammars;
+  run: typeof runCx;
+  runMaintenance: typeof runCxMaintenance;
+}
+
+const defaultRuntime: CxToolRuntime = {
+  validateBinary: validateBundledBinary,
+  ensureGrammars: ensureBundledGrammars,
+  run: runCx,
+  runMaintenance: runCxMaintenance,
+};
+
+export function registerCxTools(pi: ExtensionAPI, dirty = new DirtyPathCoordinator(), runtime: CxToolRuntime = defaultRuntime): void {
+  async function execute(root: string, command: string, args: string[], signal: AbortSignal | undefined, ctx: any): Promise<any> {
+    return dirty.withRootLock(root, async () => {
+      const validated = await runtime.validateBinary();
+      await runtime.ensureGrammars(validated.manifest);
+
+      const invoke = async (cxCommand: string, cxArgs: string[]): Promise<CxRunResult> => {
+        const run = () => runtime.run({ binary: validated.binary, binaryVersion: validated.version, cwd: root, command: cxCommand, args: cxArgs, signal });
+        let result: CxRunResult;
+        try { result = await run(); } catch (error) {
+          if (!(error instanceof CxProcessError) || !error.envelope) throw error;
+          const language = missingGrammarLanguage(error.envelope, error.details?.stderr);
+          if (!language) throw error;
+          if ((BUNDLED_LANGUAGES as readonly string[]).includes(language)) throw new Error(`bundled grammar '${language}' is unavailable after repair; reinstall pi-cx`);
+          if (!ctx.hasUI) throw new Error(JSON.stringify({ error: { code: "grammar_not_installed", language, fix: `${validated.binary} lang add ${language}` } }));
+          const confirmed = await ctx.ui.confirm("Missing cx grammar", `Install missing cx grammar '${language}' from the network?`);
+          if (!confirmed) throw new Error(JSON.stringify({ error: { code: "grammar_not_installed", language, fix: `${validated.binary} lang add ${language}` } }));
+          await runtime.runMaintenance(validated.binary, root, ["lang", "add", language], signal);
+          result = await run(); result.details.grammarInstalled = language; result.details.retried = true;
+        }
+        return result;
+      };
+
+      const pending = dirty.takePending(root);
+      let dirtyRefresh: { requested: number; refreshed: number; generation?: number } | undefined;
+      let result: CxRunResult;
+      if (command === "refresh") {
+        const refreshArgs = args.length === 0 ? [] : [...new Set([...args, ...pending])];
+        try {
+          result = await invoke("refresh", refreshArgs);
+          if (refreshArgs.length > 0) {
+            assertNamedRefresh(refreshArgs, result);
+            if (pending.length > 0) dirtyRefresh = refreshDetails(pending.length, result);
+          } else if (pending.length > 0) {
+            // A full-project refresh reports only changed files, so it cannot
+            // prove that every dirty snapshot path was actually readable.
+            // Follow it with a named proof before consuming pending paths.
+            const proof = await invoke("refresh", pending);
+            assertNamedRefresh(pending, proof);
+            dirtyRefresh = refreshDetails(pending.length, proof);
+          }
+        } catch (error) {
+          dirty.restorePending(root, pending);
+          throw error;
+        }
+      } else {
+        if (pending.length > 0) {
+          try {
+            const refresh = await invoke("refresh", pending);
+            assertNamedRefresh(pending, refresh);
+            dirtyRefresh = refreshDetails(pending.length, refresh);
+          } catch (error) {
+            dirty.restorePending(root, pending);
+            const message = error instanceof Error ? error.message : String(error);
+            throw new Error(`dirty-path refresh failed; CX query was not executed: ${message}`, { cause: error });
+          }
+        }
+        result = await invoke(command, args);
+      }
+
+      return {
+        content: [{ type: "text", text: result.raw }],
+        details: {
+          ...result.details,
+          resultCount: result.envelope.results?.length ?? 0,
+          warningCount: result.envelope.warnings?.length ?? 0,
+          freshness: result.envelope.freshness,
+          ...(dirtyRefresh ? { dirtyRefresh } : {}),
+        },
+      };
+    });
   }
   const add = (name: string, label: string, description: string, parameters: any, builder: (root: string, p: any) => string[] | Promise<string[]>, promptSnippet: string) => pi.registerTool({
     name, label, description, parameters, promptSnippet, promptGuidelines: [guidance[name]!], renderCall: renderCall(name), renderResult: renderCxResult,
     async execute(_id: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
       onUpdate?.({ content: [{ type: "text", text: "querying…" }], details: {} });
-      const root = await canonicalRoot(ctx.cwd); return execute(name.slice(3), await builder(root, params), signal, ctx);
+      const root = await canonicalRoot(ctx.cwd);
+      dirty.activate(root);
+      return execute(root, name.slice(3), await builder(root, params), signal, ctx);
     },
   });
   add("cx_overview", "cx overview", "Show one directory level or a source file outline. Output is bounded to 50KB/2000 lines.", schemas.overview, buildOverviewArgs, "Inspect a directory or file structure without reading full source");
@@ -147,4 +213,31 @@ export function registerCxTools(pi: ExtensionAPI): void {
   add("cx_callees", "cx callees", "Find one-hop callees; ambiguous symbols are not guessed and no multi-hop depth is available.", schemas.callees, (_r, p) => buildRelationArgs(p), "Find direct callees with resolution evidence");
   add("cx_map", "cx map", "Create a bounded repository map preserving ranking and import warnings.", schemas.map, (_r, p) => buildMapArgs(p), "Orient within repository subsystems and import edges");
   add("cx_refresh", "cx refresh", "Explicitly refresh changed paths, or verify the whole project when paths is empty.", schemas.refresh, buildRefreshArgs, "Refresh the cx index after edits when generation proof is needed");
+}
+
+function assertNamedRefresh(paths: string[], result: CxRunResult): void {
+  const expected = new Set(paths.map((path) => path.replaceAll("\\", "/")));
+  const confirmed = new Set<string>();
+  for (const row of result.envelope.results) {
+    if (!row || typeof row !== "object") throw new Error("cx refresh returned a malformed result row");
+    const { file, status } = row as { file?: unknown; status?: unknown };
+    if (typeof file !== "string" || typeof status !== "string" || !["updated", "removed", "unchanged", "not_indexed"].includes(status)) {
+      throw new Error("cx refresh returned a malformed path status");
+    }
+    if (!expected.has(file) || confirmed.has(file)) throw new Error(`cx refresh returned an unexpected path status: ${file}`);
+    confirmed.add(file);
+  }
+  if (confirmed.size !== expected.size) {
+    const missing = [...expected].filter((path) => !confirmed.has(path));
+    throw new Error(`cx refresh did not confirm requested paths: ${missing.join(", ")}`);
+  }
+}
+
+function refreshDetails(requested: number, result: CxRunResult): { requested: number; refreshed: number; generation?: number } {
+  const generation = result.envelope.freshness?.generation;
+  return {
+    requested,
+    refreshed: requested,
+    ...(typeof generation === "number" ? { generation } : {}),
+  };
 }

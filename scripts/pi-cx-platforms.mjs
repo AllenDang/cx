@@ -11,3 +11,8 @@ export const languagePackVersion = "1.16.1";
 export function byTarget(target) { const config = platforms.find(item => item.target === target); if (!config) throw new Error(`unsupported target ${target}`); return config; }
 export function byHost(platform = process.platform, arch = process.arch) { const config = platforms.find(item => item.platform === platform && item.arch === arch); if (!config) throw new Error(`pi-cx does not support ${platform}/${arch}; supported: ${platforms.map(item => `${item.platform}/${item.arch}`).join(", ")}`); return config; }
 export function grammarFilename(name, config) { return `${config.grammarPrefix}tree_sitter_${name}.${config.grammarExtension}`; }
+export function piAssetFilename(target) { byTarget(target); return `pi-cx-${target}.tar.gz`; }
+export function githubPiAssetUrl(version, target, checksum = false) {
+  const asset = piAssetFilename(target) + (checksum ? ".sha256" : "");
+  return `https://github.com/AllenDang/cx/releases/download/v${version}/${asset}`;
+}
