@@ -1,7 +1,4 @@
-use cap_std::{
-    ambient_authority,
-    fs::{Dir, Metadata},
-};
+use cap_std::{ambient_authority, fs::Dir};
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use redb::{Database, ReadOnlyDatabase, ReadableDatabase, ReadableTable, TableDefinition};
@@ -596,22 +593,19 @@ fn scan_disk(
     scan
 }
 
-fn metadata_mtime(metadata: &Metadata) -> SystemTime {
-    metadata
-        .modified()
-        .map(cap_std::time::SystemTime::into_std)
-        .unwrap_or(SystemTime::UNIX_EPOCH)
+fn metadata_mtime(metadata: &fs::Metadata) -> SystemTime {
+    metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
 #[cfg(unix)]
-fn same_file_identity(left: &Metadata, right: &Metadata) -> bool {
-    use cap_std::fs::MetadataExt;
+fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
     left.dev() == right.dev() && left.ino() == right.ino()
 }
 
 #[cfg(windows)]
-fn same_file_identity(left: &Metadata, right: &Metadata) -> bool {
-    use cap_std::fs::MetadataExt;
+fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
     left.volume_serial_number().is_some()
         && left.volume_serial_number() == right.volume_serial_number()
         && left.file_index().is_some()
@@ -619,11 +613,11 @@ fn same_file_identity(left: &Metadata, right: &Metadata) -> bool {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn same_file_identity(left: &Metadata, right: &Metadata) -> bool {
+fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
     left.len() == right.len() && metadata_mtime(left) == metadata_mtime(right)
 }
 
-fn stable_metadata(left: &Metadata, right: &Metadata) -> bool {
+fn stable_metadata(left: &fs::Metadata, right: &fs::Metadata) -> bool {
     same_file_identity(left, right)
         && left.len() == right.len()
         && metadata_mtime(left) == metadata_mtime(right)
@@ -646,7 +640,7 @@ fn read_beneath_with_hook(
     after_first_read: impl FnOnce(),
 ) -> std::io::Result<(Vec<u8>, SystemTime)> {
     let dir = Dir::open_ambient_dir(root, ambient_authority())?;
-    let mut file = dir.open(rel_path)?;
+    let mut file = dir.open(rel_path)?.into_std();
     let before = file.metadata()?;
     let mut source = Vec::new();
     file.read_to_end(&mut source)?;
@@ -660,7 +654,7 @@ fn read_beneath_with_hook(
     // Reopen through the same capability after reading. This proves that the
     // request path still names the same file and that a second stable read sees
     // the same bytes; a rename/symlink swap or in-place concurrent write fails.
-    let mut current = dir.open(rel_path)?;
+    let mut current = dir.open(rel_path)?.into_std();
     let current_before = current.metadata()?;
     if !same_file_identity(&after, &current_before) {
         return Err(changed_during_refresh());
@@ -1062,10 +1056,10 @@ impl Index {
         }
 
         for check in &mut scan.named_path_checks {
-            if let Some(path) = &check.rel_path {
-                if let Some(failure) = failed_paths.get(path) {
-                    check.failure = Some(*failure);
-                }
+            if let Some(path) = &check.rel_path
+                && let Some(failure) = failed_paths.get(path)
+            {
+                check.failure = Some(*failure);
             }
         }
         self.named_path_checks = std::mem::take(&mut scan.named_path_checks);
