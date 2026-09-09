@@ -598,29 +598,52 @@ fn metadata_mtime(metadata: &fs::Metadata) -> SystemTime {
 }
 
 #[cfg(unix)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+fn same_file_identity(
+    _left_file: &fs::File,
+    left: &fs::Metadata,
+    _right_file: &fs::File,
+    right: &fs::Metadata,
+) -> std::io::Result<bool> {
     use std::os::unix::fs::MetadataExt;
-    left.dev() == right.dev() && left.ino() == right.ino()
+    Ok(left.dev() == right.dev() && left.ino() == right.ino())
 }
 
 #[cfg(windows)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    left.volume_serial_number().is_some()
-        && left.volume_serial_number() == right.volume_serial_number()
-        && left.file_index().is_some()
-        && left.file_index() == right.file_index()
+fn same_file_identity(
+    left_file: &fs::File,
+    _left: &fs::Metadata,
+    right_file: &fs::File,
+    _right: &fs::Metadata,
+) -> std::io::Result<bool> {
+    fn identity(file: &fs::File) -> std::io::Result<(u32, u64)> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+        Ok((info.dwVolumeSerialNumber, index))
+    }
+
+    Ok(identity(left_file)? == identity(right_file)?)
 }
 
 #[cfg(not(any(unix, windows)))]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    left.len() == right.len() && metadata_mtime(left) == metadata_mtime(right)
+fn same_file_identity(
+    _left_file: &fs::File,
+    left: &fs::Metadata,
+    _right_file: &fs::File,
+    right: &fs::Metadata,
+) -> std::io::Result<bool> {
+    Ok(left.len() == right.len() && metadata_mtime(left) == metadata_mtime(right))
 }
 
 fn stable_metadata(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    same_file_identity(left, right)
-        && left.len() == right.len()
-        && metadata_mtime(left) == metadata_mtime(right)
+    left.len() == right.len() && metadata_mtime(left) == metadata_mtime(right)
 }
 
 fn changed_during_refresh() -> std::io::Error {
@@ -656,7 +679,7 @@ fn read_beneath_with_hook(
     // the same bytes; a rename/symlink swap or in-place concurrent write fails.
     let mut current = dir.open(rel_path)?.into_std();
     let current_before = current.metadata()?;
-    if !same_file_identity(&after, &current_before) {
+    if !same_file_identity(&file, &after, &current, &current_before)? {
         return Err(changed_during_refresh());
     }
     let mut current_source = Vec::new();
