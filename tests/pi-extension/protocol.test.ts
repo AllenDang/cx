@@ -12,7 +12,7 @@ test("rejects invalid JSON and incompatible schema", () => {
 });
 test("validates the fixed asset contract", () => {
   const file = { sha256: "a".repeat(64), bytes: 1 };
-  const manifest = { format_version: 1, package: "pi-cx", cx_version: PACKAGE_VERSION, cx_schema_version: 1, target: TARGET, tree_sitter_language_pack_version: LANGUAGE_PACK_VERSION, languages: ["rust", "c", "cpp", "javascript", "jsx", "typescript", "tsx", "python", "go", "markdown"], files: { [`bin/${PLATFORM.binaryName}`]: file, ...Object.fromEntries(GRAMMAR_NAMES.map(name => [`grammars/${grammarFilename(name)}`, file])) } };
+  const manifest = { format_version: 1, package: "pi-cx", cx_version: PACKAGE_VERSION, cx_schema_version: 1, target: TARGET, tree_sitter_language_pack_version: LANGUAGE_PACK_VERSION, languages: ["rust", "c", "cpp", "javascript", "jsx", "typescript", "tsx", "python", "go", "markdown", "html"], files: { [`bin/${PLATFORM.binaryName}`]: file, ...Object.fromEntries(GRAMMAR_NAMES.map(name => [`grammars/${grammarFilename(name)}`, file])) } };
   assert.equal(validateManifest(manifest).target, TARGET);
   assert.throws(() => validateManifest({ ...manifest, cx_version: "9.9.9" }), /cx_version/);
   assert.throws(() => validateManifest({ ...manifest, files: { "../cx": { sha256: "a".repeat(64), bytes: 1 } } }), /files missing/);

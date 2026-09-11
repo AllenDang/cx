@@ -204,6 +204,17 @@ fn resolve_call(
         labels
     };
 
+    // HTML script blocks have separate module/classic execution contexts. The
+    // file-level index does not model browser bindings, so retain candidates
+    // without claiming lexical or import resolution (even for a unique name).
+    if call_language == "html" {
+        return Resolution {
+            to: None,
+            level: ResolutionLevel::Syntax,
+            ambiguous: labels_of(&same_language),
+        };
+    }
+
     // A qualifier written at the call site is the strongest lexical evidence
     // available: `alpha::run()` names its scope explicitly.
     if let Some(qualifier) = qualifier {

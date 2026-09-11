@@ -270,7 +270,7 @@ impl ImportIndex {
                     Some(_) => Resolved::Ambiguous,
                 };
             }
-            "typescript" => {
+            "typescript" | "html" => {
                 if !import.starts_with('.') {
                     // Bare specifier: a package, not a file in this project.
                     return Resolved::External;

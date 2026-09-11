@@ -1655,3 +1655,183 @@ fn unmodelled_languages_report_no_imports() {
     assert!(extract_imports_of("go", "import \"fmt\"\n", "a.go").is_empty());
     assert!(extract_imports_of("markdown", "# Title\n", "a.md").is_empty());
 }
+
+// --- HTML host / embedded parsing ---
+#[test]
+fn html_scripts_keep_host_coordinates_and_independent_contexts() {
+    let src = "é😀<script>function first() { second(); }</script>\r\nπ<script TYPE='MODULE'>function second() { first(); }</script>";
+    let syms = extract("html", src, "test.htm");
+    assert_eq!(
+        syms.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+    for (symbol, name) in syms.iter().zip(["first", "second"]) {
+        assert_eq!(
+            symbol.byte_range.0,
+            src.find(&format!("function {name}")).unwrap()
+        );
+        assert_eq!(
+            &src[symbol.byte_range.0..symbol.byte_range.1],
+            format!(
+                "function {name}() {{ {}(); }}",
+                if name == "first" { "second" } else { "first" }
+            )
+        );
+    }
+    let calls = find_calls("html", src.as_bytes(), Path::new("test.htm")).unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1].line, 2);
+    assert_eq!(calls[1].byte_offset, src.rfind("first()").unwrap());
+    let refs = find_references("html", src.as_bytes(), Path::new("test.htm"), "first").unwrap();
+    assert_eq!(refs.len(), 2);
+    assert_eq!(refs[1].byte_offset, calls[1].byte_offset);
+    let units = parse_units("html", src.as_bytes(), Path::new("test.htm")).unwrap();
+    assert_eq!(units.len(), 2);
+    let node = units[1].1.root_node().named_child(0).unwrap();
+    assert_eq!(node.start_position().row, 1);
+    assert_eq!(
+        node.start_position().column,
+        "π<script TYPE='MODULE'>".len()
+    );
+    // An incomplete function must never consume the following script's body.
+    let malformed = "<script>function broken(</script><script>function intact() {}</script>";
+    let syms = extract("html", malformed, "test.html");
+    assert!(syms.iter().any(|s| s.name == "intact"));
+    for s in syms {
+        assert!(!malformed[s.byte_range.0..s.byte_range.1].contains("</script>"));
+    }
+}
+
+#[test]
+fn html_script_selection_is_ast_based() {
+    let src = r#"
+<!-- <script>function comment() {}</script> -->
+<textarea><script>function text() {}</script></textarea>
+<template><script>function inert() {}</script></template>
+<script type="application/json">function json() {}</script>
+<script type=importmap>function imports() {}</script>
+<script type="text/plain">function data() {}</script>
+<script SRC="remote.js">function external() {}</script>
+<script src>function externalEmpty() {}</script>
+<script language=vbscript>function legacyData() {}</script>
+<SCRIPT TyPe = "Text/JavaScript">function classic() {}</SCRIPT>
+<script type=''>function empty() {}</script>
+<script>function defaultScript() {}</script>
+<script type=module>import {x} from './dep.js'; function moduleScript() { x(); }</script>
+<script language=JavaScript>function legacy() {}</script>
+<script>function unclosed() {}
+"#;
+    let syms = extract("html", src, "test.html");
+    assert_eq!(
+        syms.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+        [
+            "classic",
+            "empty",
+            "defaultScript",
+            "moduleScript",
+            "legacy"
+        ]
+    );
+    assert_eq!(extract_imports_of("html", src, "test.html"), ["./dep.js"]);
+    for src in [
+        "",
+        "<p>No scripts</p>",
+        "&lt;script&gt;function fake() {}",
+        "<script",
+        "<script type='",
+    ] {
+        assert!(extract("html", src, "test.html").is_empty());
+    }
+    assert_eq!(detect_language(Path::new("a.htm")), Some("html"));
+    assert_eq!(download_names_for("html"), ["html", "typescript"]);
+}
+
+#[test]
+fn html_script_attribute_values_preserve_quotes_and_whitespace() {
+    for attrs in [
+        r#"type="'text/javascript'""#,
+        r#"type='"text/javascript"'"#,
+        r#"language="'javascript'""#,
+        r#"type=" module ""#,
+        r#"type="   ""#,
+        r#"language=" javascript ""#,
+        r#"language="javascript ""#,
+        "type=\"\u{a0}text/javascript\u{a0}\"",
+    ] {
+        let src = format!(
+            "<script {attrs}>function fake() {{ phantom(); }}</script><script>function real() {{}}</script>"
+        );
+        let syms = extract("html", &src, "test.html");
+        assert_eq!(
+            syms.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["real"],
+            "{attrs}"
+        );
+        assert!(
+            find_calls("html", src.as_bytes(), Path::new("test.html"))
+                .unwrap()
+                .is_empty(),
+            "{attrs}"
+        );
+        assert!(
+            find_references("html", src.as_bytes(), Path::new("test.html"), "phantom")
+                .unwrap()
+                .is_empty(),
+            "{attrs}"
+        );
+    }
+    for attrs in [
+        r#"type=" text/javascript ""#,
+        r#"type="MODULE""#,
+        r#"type="""#,
+        r#"language="JavaScript""#,
+    ] {
+        let src = format!("<script {attrs}>function real() {{}}</script>");
+        assert_eq!(
+            extract("html", &src, "test.html")[0].name,
+            "real",
+            "{attrs}"
+        );
+    }
+}
+
+#[test]
+fn html_plaintext_consumes_the_remaining_document() {
+    for tail in [
+        "<plaintext></plaintext><script>function fake() { phantom(); }</script>",
+        "<plaintext/><script>function fake() { phantom(); }</script>",
+        "<template><plaintext></plaintext></template><script>function fake() { phantom(); }</script>",
+    ] {
+        let src = format!("<script>function real() {{}}</script>{tail}");
+        let syms = extract("html", &src, "test.html");
+        assert_eq!(
+            syms.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["real"],
+            "{tail}"
+        );
+        assert!(
+            find_calls("html", src.as_bytes(), Path::new("test.html"))
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn html_plaintext_markers_in_non_html_text_do_not_stop_navigation() {
+    for prefix in [
+        "<!-- <plaintext> -->",
+        "<textarea><plaintext></textarea>",
+        "<title><plaintext></title>",
+        "<svg><plaintext></plaintext></svg>",
+        "<div data-text='<plaintext>'></div>",
+        "<script>/* <plaintext> */</script>",
+    ] {
+        let src = format!("{prefix}<script>function real() {{}}</script>");
+        assert_eq!(
+            extract("html", &src, "test.html")[0].name,
+            "real",
+            "{prefix}"
+        );
+    }
+}

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.10] - 2026-09-11
+
+### Added
+
+- HTML and HTM inline JavaScript navigation with original source coordinates, independent script parsing, syntax-level call candidates, and relative module import map dependencies.
+- HTML grammar bundled in all six pi-cx platform assets.
+
+### Changed
+
+- Index format version 13 rebuilds older indexes to include HTML files.
+
 ## [0.7.9] - 2026-09-09
 
 ### Added

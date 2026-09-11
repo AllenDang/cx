@@ -26,7 +26,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install grammars
         run: >-
-          cargo run -- lang add markdown rust typescript python go c objc cpp
+          cargo run -- lang add html markdown rust typescript python go c objc cpp
           java ruby lua zig bash solidity elixir swift dart
       - run: cargo test
 

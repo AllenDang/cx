@@ -1,4 +1,5 @@
 mod extract;
+mod html;
 mod markdown;
 mod queries;
 
@@ -38,6 +39,17 @@ pub struct LanguageConfig {
 }
 
 static LANGUAGES: &[LanguageConfig] = &[
+    LanguageConfig {
+        name: "html",
+        extensions: &["html", "htm"],
+        grammar_override: &[],
+        download_names: &["html", "typescript"],
+        query: "",
+        sig_body_child: None,
+        sig_delimiter: None,
+        kind_overrides: &[],
+        ref_node_types: &[],
+    },
     LanguageConfig {
         name: "markdown",
         extensions: &["md", "markdown", "mdown"],
@@ -324,6 +336,16 @@ fn parse_source(
     source: &[u8],
     path: &Path,
 ) -> Result<(&'static LanguageConfig, tree_sitter::Tree, &'static str), LangError> {
+    parse_range(lang, source, path, None)
+}
+
+/// Parse one bounded embedded region, retaining host byte/point coordinates.
+fn parse_range(
+    lang: &str,
+    source: &[u8],
+    path: &Path,
+    range: Option<tree_sitter::Range>,
+) -> Result<(&'static LanguageConfig, tree_sitter::Tree, &'static str), LangError> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let config = LANGUAGES
         .iter()
@@ -342,9 +364,27 @@ fn parse_source(
         parser
             .set_language(&ts_lang)
             .map_err(|_| LangError::ParseFailed)?;
+        parser
+            .set_included_ranges(&range.into_iter().collect::<Vec<_>>())
+            .map_err(|_| LangError::ParseFailed)?;
         parser.parse(source, None).ok_or(LangError::ParseFailed)
     })?;
     Ok((config, tree, grammar_name))
+}
+
+fn parse_units(
+    lang: &str,
+    source: &[u8],
+    path: &Path,
+) -> Result<Vec<(&'static LanguageConfig, tree_sitter::Tree, &'static str)>, LangError> {
+    if lang != "html" {
+        return Ok(vec![parse_source(lang, source, path)?]);
+    }
+    let (_, host, _) = parse_source(lang, source, path)?;
+    html::script_ranges(&host, source)
+        .into_iter()
+        .map(|range| parse_range("typescript", source, Path::new("inline.js"), Some(range)))
+        .collect()
 }
 
 pub use extract::CallSite;
@@ -355,8 +395,11 @@ pub use extract::RefEvidence;
 /// The result is AST evidence, not resolution: each site carries the name in the
 /// callee position plus any qualifier written there (roadmap §9 step 3).
 pub fn find_calls(lang: &str, source: &[u8], path: &Path) -> Result<Vec<CallSite>, LangError> {
-    let (_, tree, _) = parse_source(lang, source, path)?;
-    Ok(extract::find_call_sites(lang, &tree, source))
+    let mut calls = Vec::new();
+    for (config, tree, _) in parse_units(lang, source, path)? {
+        calls.extend(extract::find_call_sites(config.name, &tree, source));
+    }
+    Ok(calls)
 }
 
 /// Parse source and find all identifier nodes whose text matches `name`.
@@ -366,28 +409,27 @@ pub fn find_references(
     path: &Path,
     name: &str,
 ) -> Result<Vec<extract::Reference>, LangError> {
-    let (config, tree, _) = parse_source(lang, source, path)?;
-
     let mut refs = Vec::new();
-    let mut stack = vec![tree.root_node()];
-    while let Some(node) = stack.pop() {
-        if node.child_count() == 0
-            && config.ref_node_types.contains(&node.kind())
-            && node.utf8_text(source).ok() == Some(name)
-        {
-            refs.push(extract::Reference {
-                line: node.start_position().row + 1,
-                byte_offset: node.start_byte(),
-                evidence: extract::classify_reference(node, source),
-            });
-        }
-        for i in (0..node.child_count()).rev() {
-            if let Some(child) = node.child(i as u32) {
-                stack.push(child);
+    for (config, tree, _) in parse_units(lang, source, path)? {
+        let mut stack = vec![tree.root_node()];
+        while let Some(node) = stack.pop() {
+            if node.child_count() == 0
+                && config.ref_node_types.contains(&node.kind())
+                && node.utf8_text(source).ok() == Some(name)
+            {
+                refs.push(extract::Reference {
+                    line: node.start_position().row + 1,
+                    byte_offset: node.start_byte(),
+                    evidence: extract::classify_reference(node, source),
+                });
+            }
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i as u32) {
+                    stack.push(child);
+                }
             }
         }
     }
-
     Ok(refs)
 }
 
@@ -494,8 +536,29 @@ pub fn parse_and_extract(lang: &str, source: &[u8], path: &Path) -> Result<FileP
         });
     }
 
-    let (config, tree, grammar_name) = parse_source(lang, source, path)?;
-    let imports = extract_imports(lang, grammar_name, &tree, source);
+    let mut result = FileParse {
+        symbols: Vec::new(),
+        imports: Vec::new(),
+    };
+    for (config, tree, grammar_name) in parse_units(lang, source, path)? {
+        let parsed = extract_unit(config, &tree, grammar_name, source)?;
+        result.symbols.extend(parsed.symbols);
+        for import in parsed.imports {
+            if !result.imports.contains(&import) {
+                result.imports.push(import);
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn extract_unit(
+    config: &'static LanguageConfig,
+    tree: &tree_sitter::Tree,
+    grammar_name: &'static str,
+    source: &[u8],
+) -> Result<FileParse, LangError> {
+    let imports = extract_imports(config.name, grammar_name, tree, source);
 
     // Fast path: read lock for cache hits (concurrent reads don't block each other)
     {
@@ -504,7 +567,7 @@ pub fn parse_and_extract(lang: &str, source: &[u8], path: &Path) -> Result<FileP
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(query) = cache.get(grammar_name) {
             return Ok(FileParse {
-                symbols: extract::extract_symbols(config, query, &tree, source),
+                symbols: extract::extract_symbols(config, query, tree, source),
                 imports,
             });
         }
@@ -519,7 +582,7 @@ pub fn parse_and_extract(lang: &str, source: &[u8], path: &Path) -> Result<FileP
     });
 
     Ok(FileParse {
-        symbols: extract::extract_symbols(config, query, &tree, source),
+        symbols: extract::extract_symbols(config, query, tree, source),
         imports,
     })
 }

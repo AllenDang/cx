@@ -15,7 +15,8 @@ use crate::language::{
     LangError, detect_language, download_names_for, parse_and_extract, primary_extension,
 };
 
-pub const INDEX_VERSION: u32 = 12;
+// Invalidate pre-HTML indexes, whose file inventory omitted embedded scripts.
+pub const INDEX_VERSION: u32 = 13;
 
 /// Compute the cache path for a given project root.
 /// Returns `~/.cache/cx/indexes/<hash>.db` where hash is derived from the
@@ -1759,6 +1760,34 @@ mod tests {
         // Reload — should detect version mismatch and rebuild
         let idx2 = Index::load_or_build(dir.path(), &metadata_req());
         assert!(idx2.entries.contains_key(&PathBuf::from("src/a.rs")));
+    }
+
+    #[test]
+    fn test_pre_html_index_refreshes_file_inventory() {
+        init_grammar_cache();
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        drop(Index::load_or_build(dir.path(), &metadata_req()));
+        fs::write(
+            dir.path().join("index.html"),
+            "<script>function update() {}</script>",
+        )
+        .unwrap();
+        let db = Database::create(cache_path_for(dir.path())).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(META_TABLE).unwrap();
+            table
+                .insert("version", 12u32.to_le_bytes().as_slice())
+                .unwrap();
+        }
+        txn.commit().unwrap();
+        drop(db);
+        let rebuilt = Index::load_or_build(dir.path(), &metadata_req());
+        assert_eq!(
+            rebuilt.entries[&PathBuf::from("index.html")].symbols[0].name,
+            "update"
+        );
     }
 
     #[test]

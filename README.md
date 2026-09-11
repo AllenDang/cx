@@ -33,7 +33,7 @@ irm https://raw.githubusercontent.com/ind-igo/cx/master/install.ps1 | iex
 This repository is also a Git Pi package named `pi-cx` for macOS, Linux, and Windows on arm64 and x86_64:
 
 ```bash
-pi install git:github.com/AllenDang/cx@v0.7.9
+pi install git:github.com/AllenDang/cx@v0.7.10
 ```
 
 It registers eight strongly typed `cx_*` tools and the read-only `/cx-status` diagnostic. The package downloads a version-pinned release asset during installation, verifies the bundled cx binary and Tree-sitter grammars, and uses cx's standard shared cache. It never falls back to a host `cx` on `PATH`. See [`extensions/pi-cx/README.md`](extensions/pi-cx/README.md) for security, cache, grammar, and troubleshooting details.
@@ -482,3 +482,27 @@ LanguageConfig {
 **Kind overrides:** When a language maps generic capture names to specific concepts (e.g., Rust's `definition.class` → `SymbolKind::Struct`), add entries to `kind_overrides`. These are checked before the default mapping.
 
 **Grammar names:** The `name` field must match the name used by `tree-sitter-language-pack` (check their [language list](https://github.com/kreuzberg-dev/tree-sitter-language-pack)). If the download name differs from the config name, use `download_names` (e.g., `typescript` also downloads `tsx`).
+
+### HTML inline JavaScript
+
+`.html` and `.htm` files expose executable inline script symbols, references,
+and calls through the usual navigation and map commands. `cx lang add html`
+installs the HTML and TypeScript grammars (the latter also handles JavaScript).
+HTML AST script bodies are parsed separately, without rewriting source bytes;
+locations and definition excerpts refer to the original HTML file.
+Default/classic JavaScript MIME types, empty types, and `type="module"` are
+supported, with case-insensitive tag/attribute names and type values. Module
+import paths contribute to map dependencies using the existing relative-path
+heuristic (extensionless relative imports; explicit `.js` paths may remain
+external under that heuristic). Script bodies with `src` are ignored; no external
+URL is fetched.
+JSON, import maps, other data types, inert templates and foreign namespaces are
+excluded. CSS, HTML tag symbols, event attributes, JavaScript URLs and framework
+or template syntax are not modelled. Unterminated script elements are skipped;
+malformed JavaScript is recovered independently within each body. Attribute
+character references are not decoded, and `noscript` content is skipped.
+
+This is syntax navigation, not browser execution or binding resolution. HTML
+call relations retain syntax-level candidates even for a unique name: module
+isolation, script execution order, globals, DOM and runtime dispatch are not
+resolved. The reused JavaScript/TypeScript grammar is permissive, not a validator.
