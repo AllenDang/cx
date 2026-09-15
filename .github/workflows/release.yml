@@ -67,9 +67,22 @@ jobs:
             pi-cx-${{ matrix.target }}.tar.gz.sha256
 
   pi-extension-unit:
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cx-x86_64-unknown-linux-gnu
+          path: ci-asset
+      - name: Prepare native Pi test asset
+        shell: bash
+        run: |
+          mkdir -p ci-native
+          tar xzf ci-asset/pi-cx-x86_64-unknown-linux-gnu.tar.gz -C ci-native
+          chmod +x ci-native/bin/cx
+          echo "PI_CX_TEST_BINARY=$PWD/ci-native/bin/cx" >> "$GITHUB_ENV"
+          echo "PI_CX_TEST_GRAMMARS=$PWD/ci-native/grammars" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
