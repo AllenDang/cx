@@ -16,6 +16,7 @@ const common = {
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
   offset: Type.Optional(Type.Integer({ minimum: 0 })),
 };
+const detail = Type.Optional(StringEnum(["compact", "full"] as const, { description: "compact (default) preserves primary evidence; full includes repeated raw paths/matches/hunks" }));
 const kind = Type.Optional(StringEnum(SYMBOL_KINDS));
 const role = Type.Optional(StringEnum(SYMBOL_ROLES));
 const scope = Type.Optional(Type.String({ description: "Glob matched against the complete qualified name. Use ANGE::*, ANGE::MaterialRegistry::*, or an exact name such as ANGE::MaterialRegistry::load; a parent without trailing ::* does not match members." }));
@@ -30,6 +31,9 @@ export const schemas = {
   callees: Type.Object({ name: Type.String({ description: "Lexical symbol identifier whose body should be examined" }), scope, ...common }),
   map: Type.Object({ depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 8 })), includeVendor: Type.Optional(Type.Boolean()), includeGenerated: Type.Optional(Type.Boolean()), tests: Type.Optional(Type.Boolean()), exclude: Type.Optional(Type.Array(Type.String(), { maxItems: 32 })), fresh: common.fresh, limit: common.limit, offset: common.offset }),
   refresh: Type.Object({ paths: Type.Optional(Type.Array(Type.String(), { maxItems: 200, default: [] })) }),
+  impact: Type.Object({ name: Type.String({ description: "Lexical function name; use scope/file/site selectors to choose exactly one root" }), scope, file: Type.Optional(Type.String()), line: Type.Optional(Type.Integer({ minimum: 1, maximum: 4294967295 })), byteOffset: Type.Optional(Type.Integer({ minimum: 0 })), maxDepth: Type.Optional(Type.Integer({ minimum: 0, maximum: 32 })), maxNodes: Type.Optional(Type.Integer({ minimum: 1, maximum: 10000 })), maxEdges: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000000 })), snapshot: Type.Optional(Type.String()), byteBudget: Type.Optional(Type.Integer({ minimum: 1024, maximum: 32768 })), detail, ...common }),
+  changes: Type.Object({ base: Type.Optional(Type.String()), head: Type.Optional(Type.String()), staged: Type.Optional(Type.Boolean()), mergeBase: Type.Optional(Type.Boolean()), impact: Type.Optional(Type.Boolean()), maxDepth: Type.Optional(Type.Integer({ minimum: 0, maximum: 32 })), snapshot: Type.Optional(Type.String()), byteBudget: Type.Optional(Type.Integer({ minimum: 1024, maximum: 32768 })), detail, noTests: common.noTests, limit: common.limit, offset: common.offset }),
+  context: Type.Object({ query: Type.String({ description: "Task words, identifier or path. Lexical retrieval, not semantic search" }), includeBody: Type.Optional(Type.Boolean()), includeVendor: Type.Optional(Type.Boolean()), includeGenerated: Type.Optional(Type.Boolean()), includeFixtures: Type.Optional(Type.Boolean()), snapshot: Type.Optional(Type.String()), byteBudget: Type.Optional(Type.Integer({ minimum: 1024, maximum: 32768 })), detail, ...common }),
 };
 
 export type OverviewParams = Static<typeof schemas.overview>;
@@ -89,6 +93,37 @@ export async function buildRefreshArgs(root: string, p: Static<typeof schemas.re
   return Promise.all((p.paths ?? []).map((path) => projectPath(root, path, true)));
 }
 
+function taskBudget(p: { snapshot?: string; byteBudget?: number }, defaultBudget: number): string[] {
+  assertString("snapshot", p.snapshot); assertInteger("byteBudget", p.byteBudget, 1024, 32768);
+  const args = ["--byte-budget", String(p.byteBudget ?? defaultBudget)]; option(args, "--snapshot", p.snapshot); return args;
+}
+export async function buildImpactArgs(root: string, p: Static<typeof schemas.impact>): Promise<string[]> {
+  assertString("name", p.name, true); assertString("scope", p.scope); assertString("file", p.file);
+  assertInteger("line", p.line, 1, 4294967295); assertInteger("byteOffset", p.byteOffset, 0);
+  assertInteger("maxDepth", p.maxDepth, 0, 32); assertInteger("maxNodes", p.maxNodes, 1, 10000); assertInteger("maxEdges", p.maxEdges, 1, 1000000); assertEnum("detail", p.detail, ["compact", "full"]);
+  if ((p.line !== undefined || p.byteOffset !== undefined) && p.file === undefined) throw new Error("line/byteOffset requires file");
+  if (p.line !== undefined && p.byteOffset !== undefined) throw new Error("line and byteOffset are mutually exclusive");
+  const args = ["--name", p.name]; if (p.file !== undefined) option(args, "--file", await projectPath(root, p.file));
+  option(args, "--line", p.line); option(args, "--byte-offset", p.byteOffset); option(args, "--scope", p.scope);
+  option(args, "--max-depth", p.maxDepth ?? 3); option(args, "--max-nodes", p.maxNodes ?? 1000); option(args, "--max-edges", p.maxEdges ?? 20000); option(args, "--detail", p.detail ?? "compact");
+  return [...args, ...taskBudget(p, 32768), ...commonArgs({ ...p, fresh: p.fresh ?? "verified" }, 50)];
+}
+export function buildChangesArgs(p: Static<typeof schemas.changes>): string[] {
+  assertString("base", p.base); assertString("head", p.head); assertBoolean("staged", p.staged); assertBoolean("mergeBase", p.mergeBase); assertBoolean("impact", p.impact); assertEnum("detail", p.detail, ["compact", "full"]);
+  assertInteger("maxDepth", p.maxDepth, 0, 32); validateCommon(p);
+  if (p.staged && p.head !== undefined) throw new Error("staged and head cannot be combined");
+  if (p.mergeBase && p.head === undefined) throw new Error("mergeBase requires head");
+  const args = ["--base", p.base ?? "HEAD"]; option(args, "--head", p.head); if (p.staged) args.push("--staged"); if (p.mergeBase) args.push("--merge-base"); if (p.impact) args.push("--impact");
+  option(args, "--max-depth", p.maxDepth ?? 2); option(args, "--detail", p.detail ?? "compact"); if (p.noTests) args.push("--no-tests"); option(args, "--limit", p.limit ?? 50); option(args, "--offset", p.offset);
+  return [...args, ...taskBudget(p, 32768)];
+}
+export function buildContextArgs(p: Static<typeof schemas.context>): string[] {
+  assertString("query", p.query, true); if (!p.query.trim()) throw new Error("query must be a non-empty task description");
+  for (const key of ["includeBody", "includeVendor", "includeGenerated", "includeFixtures"] as const) assertBoolean(key, p[key]); assertEnum("detail", p.detail, ["compact", "full"]);
+  const args = ["--query", p.query, "--detail", p.detail ?? "compact"]; if (p.includeBody) args.push("--include-body"); if (p.includeVendor) args.push("--include-vendor"); if (p.includeGenerated) args.push("--include-generated"); if (p.includeFixtures) args.push("--include-fixtures");
+  return [...args, ...taskBudget(p, 16384), ...commonArgs({ ...p, fresh: p.fresh ?? "verified" }, 10)];
+}
+
 const guidance: Record<string, string> = {
   cx_overview: "Use cx_overview before reading a whole source file when only its structure is needed.",
   cx_symbols: "Use cx_symbols for identifier-oriented discovery; name is a glob (use *Material* for related names), and scope matches the complete qualified name (use ANGE::* or ANGE::MaterialRegistry::*). Use grep for raw strings, logs, SQL, routes, and generated text.",
@@ -98,6 +133,9 @@ const guidance: Record<string, string> = {
   cx_callees: "Use cx_callers/cx_callees for one-hop call evidence; do not treat unresolved edges as resolved.",
   cx_map: "Use cx_map for bounded repository orientation, not as a runtime dependency graph.",
   cx_refresh: "Use cx_refresh after edits when the next decision requires proof that the current index generation includes those paths.",
+  cx_impact: "Use cx_impact for multi-hop reverse call questions, not routine body reads. Select one root with file/scope/site; preserve supported versus possible paths and unresolved frontiers. Unknown totals and traversal limits are not a safety verdict; snapshot guards output pagination.",
+  cx_changes: "Use cx_changes for tracked Git changes with old/new symbol evidence. Default compares raw working bytes to HEAD; staged and commit modes are explicit. Optional impact has separate before/after snapshots. It never executes project tests or proves behavioral safety.",
+  cx_context: "Use cx_context when task words are known but the relevant symbols/files are not. It retrieves lexical evidence and bounded original text, not semantic confidence. Prefer cx_definition for a known body; preserve missing evidence and budget disclosures.",
 };
 
 function renderCall(name: string) { return (rawArgs: unknown, theme: any) => { const args = (rawArgs && typeof rawArgs === "object" ? rawArgs : {}) as Record<string, unknown>; return new Text(theme.fg("toolTitle", theme.bold(`${name} `)) + theme.fg("muted", Object.entries(args).slice(0, 2).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" ")), 0, 0); }; }
@@ -107,7 +145,8 @@ export function renderCxResult(result: any, options: any, theme: any) {
   if (options.isError) return new Text(theme.fg("error", options.expanded ? raw : `cx error: ${raw}`), 0, 0);
   const details = result.details ?? {};
   if (options.expanded) return new Text(raw, 0, 0);
-  return new Text(theme.fg("success", `cx: ${details.resultCount ?? 0} result(s), ${details.durationMs ?? 0}ms, ${details.warningCount ?? 0} warning(s)`), 0, 0);
+  const partial = details.analysis?.complete === false;
+  return new Text(theme.fg(partial ? "warning" : "success", `cx: ${details.resultCount ?? 0} result(s), ${details.durationMs ?? 0}ms, ${details.warningCount ?? 0} warning(s)${partial ? ", partial analysis" : ""}`), 0, 0);
 }
 
 export interface CxToolRuntime {
@@ -191,6 +230,7 @@ export function registerCxTools(pi: ExtensionAPI, dirty = new DirtyPathCoordinat
           resultCount: result.envelope.results?.length ?? 0,
           warningCount: result.envelope.warnings?.length ?? 0,
           freshness: result.envelope.freshness,
+          analysis: result.envelope.analysis,
           ...(dirtyRefresh ? { dirtyRefresh } : {}),
         },
       };
@@ -199,6 +239,7 @@ export function registerCxTools(pi: ExtensionAPI, dirty = new DirtyPathCoordinat
   const add = (name: string, label: string, description: string, parameters: any, builder: (root: string, p: any) => string[] | Promise<string[]>, promptSnippet: string) => pi.registerTool({
     name, label, description, parameters, promptSnippet, promptGuidelines: [guidance[name]!], renderCall: renderCall(name), renderResult: renderCxResult,
     async execute(_id: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
+      if (signal?.aborted) throw new Error("cx query cancelled");
       onUpdate?.({ content: [{ type: "text", text: "querying…" }], details: {} });
       const root = await canonicalRoot(ctx.cwd);
       dirty.activate(root);
@@ -213,6 +254,9 @@ export function registerCxTools(pi: ExtensionAPI, dirty = new DirtyPathCoordinat
   add("cx_callees", "cx callees", "Find one-hop callees; ambiguous symbols are not guessed and no multi-hop depth is available.", schemas.callees, (_r, p) => buildRelationArgs(p), "Find direct callees with resolution evidence");
   add("cx_map", "cx map", "Create a bounded repository map preserving ranking and import warnings.", schemas.map, (_r, p) => buildMapArgs(p), "Orient within repository subsystems and import edges");
   add("cx_refresh", "cx refresh", "Explicitly refresh changed paths, or verify the whole project when paths is empty.", schemas.refresh, buildRefreshArgs, "Refresh the cx index after edits when generation proof is needed");
+  add("cx_impact", "cx impact", "Analyze bounded multi-hop reverse call impact for one exact function site. Returns shortest supported/possible witnesses, unresolved frontiers, coverage and independent traversal/output limits; not compiler or runtime proof.", schemas.impact, buildImpactArgs, "Trace multi-hop impact with source witnesses and uncertainty");
+  add("cx_changes", "cx changes", "Compare tracked Git/working snapshots, preserving old/new symbols and file-level/non-source changes. Optional impact is evaluated separately before and after. Does not run project commands or tests.", schemas.changes, (_r, p) => buildChangesArgs(p), "Locate changes on both sides and optionally analyze their impact");
+  add("cx_context", "cx context", "Find task-relevant source by exact names, paths, subwords and body/comment/string evidence. Bounded original excerpts and byte-aware pagination; no popularity filler or semantic-search guarantee.", schemas.context, (_r, p) => buildContextArgs(p), "Retrieve a bounded, source-backed task context");
 }
 
 function assertNamedRefresh(paths: string[], result: CxRunResult): void {

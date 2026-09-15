@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-pi install git:github.com/AllenDang/cx@v0.7.10
+pi install git:github.com/AllenDang/cx@v0.8.0
 ```
 
 The package supports macOS, Linux, and Windows on arm64 and x86_64. Installation selects the asset matching the current OS and architecture, verifies the archive and every manifest file, then installs it under a platform-specific `vendor/pi-cx/<platform>-<arch>` directory. Installation runs native code verification and requires network access. Review package source before installation.
@@ -22,8 +22,11 @@ The package supports macOS, Linux, and Windows on arm64 and x86_64. Installation
 | `cx_callees` | One-hop callee evidence |
 | `cx_map` | Bounded repository map |
 | `cx_refresh` | Explicit verified refresh after edits |
+| `cx_impact` | Bounded multi-hop reverse-call impact with witnesses and uncertainty |
+| `cx_changes` | Tracked Git/working changes, old/new symbols, optional two-sided impact |
+| `cx_context` | Lexical task retrieval with source provenance and byte-bounded excerpts |
 
-Every query is rooted at the current Pi session's canonical `ctx.cwd`; tools do not accept a root argument. Path and symlink escapes are rejected. Results preserve cx's schema-v1 JSON envelope. cx evidence is syntax-oriented and does not claim compiler-level semantic resolution.
+Every query is rooted at the current Pi session's canonical `ctx.cwd`; tools do not accept a root argument. Path and symlink escapes are rejected. Results preserve cx's schema-v1 JSON envelope; task tools add structured `analysis`, and use `page.total: null` when analysis is partial. Task tools default to compact detail and verified freshness for impact/context; request `detail: "full"` for repeated raw paths/hunks/match text. cx evidence is syntax-oriented and does not claim compiler/runtime semantics, behavioral safety, or test sufficiency. See [`docs/TASK_ANALYSIS.md`](../../docs/TASK_ANALYSIS.md).
 
 ## Cross-extension dirty paths
 
@@ -38,11 +41,11 @@ pi.events.emit("cx:mark-dirty:v1", {
 });
 ```
 
-pi-cx accepts only valid paths inside the current canonical project root, rejects NUL, oversized payloads, excessive path depth, and symlink escapes, and deduplicates pending paths. Events are bounded to 200 paths before any filesystem canonicalization. Named CX reads use capability-scoped file handles beneath the canonical root, so path components cannot be swapped to escape between validation and read. Before the next `cx_overview`, `cx_symbols`, `cx_definition`, `cx_references`, `cx_callers`, `cx_callees`, or `cx_map` call, it serializes a path refresh ahead of the query. A named refresh must return one valid status row per requested path, and index persistence must commit successfully; otherwise the paths stay pending and the potentially stale query does not run. `cx_refresh` merges explicit paths with pending paths; an empty explicit path list performs a full verified refresh followed by named proof of the pending snapshot. Dirty paths are session-local and are cleared at session shutdown.
+pi-cx accepts only valid paths inside the current canonical project root, rejects NUL, oversized payloads, excessive path depth, and symlink escapes, and deduplicates pending paths. Events are bounded to 200 paths before any filesystem canonicalization. Named CX reads use capability-scoped file handles beneath the canonical root, so path components cannot be swapped to escape between validation and read. Before the next query tool call (including impact/changes/context), it serializes a path refresh ahead of the query. A named refresh must return one valid status row per requested path, and index persistence must commit successfully; otherwise the paths stay pending and the potentially stale query does not run. `cx_refresh` merges explicit paths with pending paths; an empty explicit path list performs a full verified refresh followed by named proof of the pending snapshot. Dirty paths are session-local and are cleared at session shutdown.
 
 ## Cache and grammars
 
-pi-cx shares cx's standard cache (`~/Library/Caches/cx` on macOS), including indexes and grammars. Nine bundled Tree-sitter libraries cover Rust, C, C++, JavaScript, JSX, TypeScript, TSX, Python, Go, Markdown, and HTML inline JavaScript. Before the first query, missing or mismatched bundled grammars are repaired offline under a cache lock using digest checks and atomic renames. Other grammars are downloaded only after confirmation in TUI/RPC mode; print/JSON mode returns a structured error.
+pi-cx shares cx's standard cache (`~/Library/Caches/cx` on macOS), including indexes, the compressed task-fact sidecar, and grammars. Nine bundled Tree-sitter libraries cover Rust, C, C++, JavaScript, JSX, TypeScript, TSX, Python, Go, Markdown, and HTML inline JavaScript. Before the first query, missing or mismatched bundled grammars are repaired offline under a cache lock using digest checks and atomic renames. Other grammars are downloaded only after confirmation in TUI/RPC mode; print/JSON mode returns a structured error. `cx cache clean` removes both redb and its task-fact sidecar.
 
 ## Diagnostics and troubleshooting
 

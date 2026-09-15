@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import test from "node:test";
 import piCx from "../../extensions/pi-cx/index.js";
 import { SUPPORTED_PLATFORMS, currentPlatformConfig, grammarFilename } from "../../extensions/pi-cx/platform.js";
+
+const exec = promisify(execFile);
 
 test("Cargo and Pi package versions match and vendor is ignored", async () => {
   const pkg = JSON.parse(await readFile("package.json", "utf8")); const cargo = await readFile("Cargo.toml", "utf8"); const ignore = await readFile(".gitignore", "utf8");
@@ -35,6 +41,15 @@ test("release matrix and installer URL helpers agree on every platform asset", a
   }
 });
 
+test("manifest generation is idempotent and never hashes its previous manifest", async () => {
+  const stage=await mkdtemp(join(tmpdir(),"pi-cx-manifest-"));await mkdir(join(stage,"bin"));
+  await writeFile(join(stage,"bin","cx"),"binary");
+  const args=["scripts/make-pi-cx-manifest.mjs",stage,"0.8.0","fixture-target","1.16.1"];
+  await exec("node",args);const first=await readFile(join(stage,"manifest.json"),"utf8");
+  await exec("node",args);const second=await readFile(join(stage,"manifest.json"),"utf8");
+  assert.equal(second,first);assert.equal(Object.hasOwn(JSON.parse(second).files,"manifest.json"),false);
+});
+
 test("extension factory uses only load-safe registration methods", () => {
   const tools: any[] = [], commands: string[] = [], handlers: string[] = [], eventChannels: string[] = [];
   const api: any = {
@@ -44,7 +59,7 @@ test("extension factory uses only load-safe registration methods", () => {
     setActiveTools() { throw new Error("action method called during extension loading"); },
   };
   assert.doesNotThrow(() => piCx(api));
-  assert.deepEqual(tools.map(t => t.name), ["cx_overview", "cx_symbols", "cx_definition", "cx_references", "cx_callers", "cx_callees", "cx_map", "cx_refresh"]);
+  assert.deepEqual(tools.map(t => t.name), ["cx_overview", "cx_symbols", "cx_definition", "cx_references", "cx_callers", "cx_callees", "cx_map", "cx_refresh", "cx_impact", "cx_changes", "cx_context"]);
   assert.deepEqual(commands, ["cx-status"]); assert.ok(tools.every(t => !Object.hasOwn(t.parameters.properties, "root")));
   assert.deepEqual(eventChannels, ["cx:mark-dirty:v1"]);
   assert.deepEqual(handlers, ["session_start", "session_shutdown"]);

@@ -533,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "cx-cli"
-version = "0.7.10"
+version = "0.8.0"
 dependencies = [
  "bincode",
  "cap-std",
@@ -545,11 +545,13 @@ dependencies = [
  "redb",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "toon-format",
  "tree-sitter",
  "tree-sitter-language-pack",
  "windows-sys 0.61.2",
+ "zstd",
 ]
 
 [[package]]

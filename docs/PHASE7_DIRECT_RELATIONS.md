@@ -2,6 +2,10 @@
 
 > Roadmap reference: `docs/AGENT_NATIVE_DEVELOPMENT_ROADMAP.md` §5.4, §9, §11 Phase 7.
 > One hop only. No index change.
+>
+> Historical Phase 7 report. See [Stage R](STAGE_R_RELATION_FOUNDATION.md) for
+> subsequent site identity, declaration association, ownership, coverage, and
+> evidence-preserving pagination changes. The one-hop interface remains.
 
 ## Problem
 

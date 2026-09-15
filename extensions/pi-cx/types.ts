@@ -1,7 +1,7 @@
 import { currentPlatformConfig } from "./platform.js";
 
 export const PACKAGE_NAME = "pi-cx";
-export const PACKAGE_VERSION = "0.7.10";
+export const PACKAGE_VERSION = "0.8.0";
 export const CX_SCHEMA_VERSION = 1;
 export const ASSET_FORMAT_VERSION = 1;
 export const LANGUAGE_PACK_VERSION = "1.16.1";
@@ -36,11 +36,12 @@ export interface CxEnvelope {
   schema_version: number;
   query: { kind: string; subject?: string };
   freshness: Record<string, unknown>;
-  page: { total: number; offset: number; limit: number | null; truncated: boolean };
+  page: { total: number | null; offset: number; limit: number | null; truncated: boolean };
   results: unknown[];
   warnings: string[];
   next_queries: string[];
   error: null | { code: string; message: string; language?: string };
+  analysis?: { complete?: boolean; discovered_count?: number | null; snapshot?: string; [key: string]: unknown };
 }
 
 export interface RunDetails {

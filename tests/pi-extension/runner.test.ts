@@ -18,6 +18,7 @@ else if(command==='error'){ console.log(JSON.stringify({...base,error:{code:'fil
 else if(command==='misuse'){ console.error('bad argv'); process.exitCode=2; }
 else if(command==='locked'){ console.error('cx: failed to open database: Database already open. Cannot acquire lock.'); process.exitCode=1; }
 else if(command==='large'){ base.results=[{body:'x'.repeat(70000)}]; console.log(JSON.stringify(base)); }
+else if(command==='impact'){ base.results=[{body:'x'.repeat(70000)}]; base.analysis={complete:false,discovered_count:1}; base.page.total=null; console.log(JSON.stringify(base)); }
 else { base.results=[{argv:process.argv.slice(2),cwd:process.cwd()}]; console.log(JSON.stringify(base)); }
 `); await chmod(binary, 0o755); return { binary, cwd };
 }
@@ -36,6 +37,13 @@ test("distinguishes cx errors, CLI mismatch, and invalid protocol", async () => 
 test("oversized output remains valid JSON and points to complete output", async () => {
   const f = await fake(); const result = await runCx({ ...f, command: "large" }); const fallback = JSON.parse(result.raw);
   assert.equal(fallback.truncation.reason, "pi_output_limit"); assert.ok(result.details.truncated?.path); assert.ok(Buffer.byteLength(result.raw) < 50 * 1024);
+});
+test("oversized task output never invents an exact total or traversal continuation", async () => {
+  const f=await fake();const result=await runCx({...f,command:"impact",args:["--offset","7"]});
+  assert.equal(result.envelope.page.total,null);assert.equal(result.envelope.page.offset,7);
+  assert.equal(result.envelope.analysis?.complete,false);assert.equal(result.envelope.analysis?.discovered_count,null);
+  assert.deepEqual(result.envelope.next_queries,[]);assert.equal(result.envelope.page.truncated,false);
+  assert.ok(result.details.truncated?.path);
 });
 test("timeout and AbortSignal terminate the process", async () => {
   const f = await fake(); await assert.rejects(() => runCx({ ...f, command: "sleep", timeoutMs: 20 }), /timed out/);

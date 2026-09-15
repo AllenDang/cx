@@ -302,6 +302,12 @@ fn cache_clean_removes_index() {
         .output()
         .unwrap();
     assert!(out.status.success());
+    // Task facts are lazy and should be cleaned with the base index.
+    let out = cx_in(dir.path())
+        .args(["impact", "--name", "main"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
 
     // Get the cache path
     let out = cx_in(dir.path()).args(["cache", "path"]).output().unwrap();
@@ -310,6 +316,8 @@ fn cache_clean_removes_index() {
         std::path::Path::new(&cache_path).exists(),
         "index should exist after build"
     );
+    let task_path = std::path::Path::new(&cache_path).with_extension("tasks.zst");
+    assert!(task_path.exists(), "task facts should exist after build");
 
     // Clean it
     let out = cx_in(dir.path()).args(["cache", "clean"]).output().unwrap();
@@ -318,6 +326,7 @@ fn cache_clean_removes_index() {
         !std::path::Path::new(&cache_path).exists(),
         "index should be gone after clean"
     );
+    assert!(!task_path.exists(), "task facts should be gone after clean");
 }
 
 #[test]

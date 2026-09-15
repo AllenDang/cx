@@ -162,7 +162,9 @@ fn caller_query_warns_about_distinct_symbols_and_unresolved_edges() {
     assert!(
         warnings
             .iter()
-            .any(|w| w.starts_with("8 distinct symbols named \"run\"")),
+            // Site identity distinguishes Rust/C++ alpha::run and retains the
+            // unrelated TypeScript interface declaration Tickable.run.
+            .any(|w| w.starts_with("10 distinct symbols named \"run\"")),
         "{warnings:?}"
     );
     assert!(
@@ -208,7 +210,7 @@ fn unambiguous_target_resolves_for_every_caller() {
 }
 
 #[test]
-fn scope_filter_narrows_caller_edges_to_one_target() {
+fn scope_filter_keeps_matching_uncertainty_without_binding_it() {
     let p = fixture_project(CORPUS);
     let out = run_cx(
         p.path(),
@@ -218,10 +220,35 @@ fn scope_filter_narrows_caller_edges_to_one_target() {
     );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     let rows = edges(&out);
-    assert!(!rows.is_empty(), "{rows:?}");
+    let candidates =
+        "alpha::run, ange::EcsWorld::run, beta::Runner::run, gen::run, thirdparty::run";
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "run_all".into(),
+                "".into(),
+                "syntax".into(),
+                candidates.into()
+            ),
+            (
+                "run_both".into(),
+                "alpha::run".into(),
+                "lexical_scope".into(),
+                "".into()
+            ),
+            (
+                "test_world_runs".into(),
+                "".into(),
+                "syntax".into(),
+                candidates.into()
+            ),
+        ]
+    );
     assert!(
-        rows.iter().all(|(_, to, _, _)| to == "alpha::run"),
-        "{rows:?}"
+        warnings_of(&out)
+            .iter()
+            .any(|w| w.starts_with("relation_scope: 2 unresolved call sites"))
     );
 }
 
@@ -269,14 +296,38 @@ fn callees_scope_filter_selects_one_body() {
     let out = run_cx(
         p.path(),
         &[
-            "--json", "callees", "--name", "run", "--scope", "alpha::*", "--all",
+            "--json",
+            "callees",
+            "--name",
+            "run",
+            "--scope",
+            "ange::EcsWorld::run",
+            "--all",
         ],
     );
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     let rows = edges(&out);
     assert_eq!(rows.len(), 1, "{rows:?}");
-    assert_eq!(rows[0].0, "alpha::run", "{rows:?}");
+    assert_eq!(rows[0].0, "ange::EcsWorld::run", "{rows:?}");
     assert_eq!(rows[0].1, "ange::validate_param", "{rows:?}");
+}
+
+#[test]
+fn equal_qualified_names_in_different_languages_are_not_one_body() {
+    let p = fixture_project(CORPUS);
+    let out = run_cx(
+        p.path(),
+        &[
+            "--json", "callees", "--name", "run", "--scope", "alpha::*", "--all",
+        ],
+    );
+    assert_eq!(out.code, 0);
+    assert_eq!(out.results(), Vec::<serde_json::Value>::new());
+    assert!(
+        warnings_of(&out)
+            .iter()
+            .any(|w| w.starts_with("2 distinct symbols named \"run\""))
+    );
 }
 
 #[test]

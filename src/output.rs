@@ -73,6 +73,15 @@ pub enum ErrorCode {
     RefreshFailed,
     /// A grammar needed to answer the query is not installed.
     GrammarNotInstalled,
+    SubjectNotFound,
+    SubjectAmbiguous,
+    UnsupportedAnalysis,
+    ContentChanged,
+    SnapshotMismatch,
+    InvalidInput,
+    AnalysisFailed,
+    BudgetTooSmall,
+    GitError,
 }
 
 #[derive(Serialize)]
@@ -207,7 +216,7 @@ fn rewritten_args(keep_limit: bool) -> Vec<String> {
     out
 }
 
-fn shell_quote(arg: &str) -> String {
+pub(crate) fn shell_quote(arg: &str) -> String {
     if arg.is_empty() {
         return "''".to_string();
     }

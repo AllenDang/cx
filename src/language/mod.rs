@@ -353,6 +353,11 @@ fn parse_range(
         .ok_or_else(|| LangError::NotInstalled(lang.to_string()))?;
     let grammar_name = resolve_grammar_name(config, ext);
 
+    // Queries never install code implicitly. has_parser loads an existing
+    // library (and caches it) without network; lang add is the opt-in installer.
+    if !tree_sitter_language_pack::has_parser(grammar_name) {
+        return Err(LangError::NotInstalled(config.name.to_string()));
+    }
     let ts_lang = tree_sitter_language_pack::get_language(grammar_name)
         .map_err(|_| LangError::NotInstalled(config.name.to_string()))?;
 
@@ -390,16 +395,220 @@ fn parse_units(
 pub use extract::CallSite;
 pub use extract::RefEvidence;
 
-/// Parse a file and collect every syntactic call site.
-///
-/// The result is AST evidence, not resolution: each site carries the name in the
-/// callee position plus any qualifier written there (roadmap §9 step 3).
-pub fn find_calls(lang: &str, source: &[u8], path: &Path) -> Result<Vec<CallSite>, LangError> {
-    let mut calls = Vec::new();
-    for (config, tree, _) in parse_units(lang, source, path)? {
-        calls.extend(extract::find_call_sites(config.name, &tree, source));
+/// Whether this language has a call model (HTML uses bounded script units).
+pub fn supports_calls(lang: &str) -> bool {
+    lang == "html" || extract::supports_calls(lang)
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CallFacts {
+    pub sites: Vec<CallSite>,
+    pub has_parse_errors: bool,
+    pub unsupported_calls: usize,
+}
+
+impl CallFacts {
+    fn empty() -> Self {
+        Self {
+            sites: Vec::new(),
+            has_parse_errors: false,
+            unsupported_calls: 0,
+        }
     }
-    Ok(calls)
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CachedCallSite {
+    name: u32,
+    qualifier: Option<u32>,
+    line: u32,
+    start: u32,
+    end: u32,
+    owner_start: u32,
+    owner_end: u32,
+    flags: u8,
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CachedCallFacts {
+    names: Vec<String>,
+    qualifiers: Vec<String>,
+    sites: Vec<CachedCallSite>,
+    pub has_parse_errors: bool,
+    pub unsupported_calls: u32,
+}
+impl CachedCallFacts {
+    fn intern(values: &mut Vec<String>, value: &str) -> u32 {
+        values.iter().position(|v| v == value).unwrap_or_else(|| {
+            values.push(value.into());
+            values.len() - 1
+        }) as u32
+    }
+    pub fn from_facts(facts: CallFacts) -> Self {
+        let mut names = Vec::new();
+        let mut qualifiers = Vec::new();
+        let mut sites = Vec::with_capacity(facts.sites.len());
+        for site in facts.sites {
+            let name = Self::intern(&mut names, &site.name);
+            let qualifier = site
+                .qualifier
+                .as_deref()
+                .map(|q| Self::intern(&mut qualifiers, q));
+            let (owner_start, owner_end) = site.owner_range.unwrap_or((0, 0));
+            sites.push(CachedCallSite {
+                name,
+                qualifier,
+                line: site.line as u32,
+                start: site.byte_offset as u32,
+                end: site.byte_end as u32,
+                owner_start: owner_start as u32,
+                owner_end: owner_end as u32,
+                flags: u8::from(site.anonymous_owner) | (u8::from(site.indirect) << 1),
+            });
+        }
+        Self {
+            names,
+            qualifiers,
+            sites,
+            has_parse_errors: facts.has_parse_errors,
+            unsupported_calls: facts.unsupported_calls as u32,
+        }
+    }
+    pub fn expand(&self) -> CallFacts {
+        CallFacts {
+            sites: self
+                .sites
+                .iter()
+                .map(|site| CallSite {
+                    name: self.names[site.name as usize].clone(),
+                    qualifier: site.qualifier.map(|q| self.qualifiers[q as usize].clone()),
+                    line: site.line as usize,
+                    byte_offset: site.start as usize,
+                    byte_end: site.end as usize,
+                    owner_range: (site.owner_end > site.owner_start)
+                        .then_some((site.owner_start as usize, site.owner_end as usize)),
+                    anonymous_owner: site.flags & 1 != 0,
+                    indirect: site.flags & 2 != 0,
+                })
+                .collect(),
+            has_parse_errors: self.has_parse_errors,
+            unsupported_calls: self.unsupported_calls as usize,
+        }
+    }
+    pub fn contains_name(&self, name: &str) -> bool {
+        self.names
+            .iter()
+            .position(|n| n == name)
+            .is_some_and(|id| self.sites.iter().any(|s| s.name as usize == id))
+    }
+    #[cfg(test)]
+    pub fn site_count(&self) -> usize {
+        self.sites.len()
+    }
+}
+
+pub const TASK_FACTS_VERSION: u32 = 2;
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TaskFacts {
+    pub version: u32,
+    pub line_starts: Vec<u32>,
+    pub calls: Option<CachedCallFacts>,
+}
+impl TaskFacts {
+    pub fn line(&self, byte: usize) -> usize {
+        self.line_starts
+            .partition_point(|start| *start as usize <= byte)
+    }
+    pub(crate) fn empty(source: &[u8]) -> Self {
+        let mut line_starts = vec![0];
+        line_starts.extend(
+            source
+                .iter()
+                .enumerate()
+                .filter_map(|(i, b)| (*b == b'\n').then_some((i + 1) as u32)),
+        );
+        Self {
+            version: TASK_FACTS_VERSION,
+            line_starts,
+            calls: None,
+        }
+    }
+    pub(crate) fn placeholder() -> Self {
+        Self {
+            version: TASK_FACTS_VERSION,
+            line_starts: vec![0],
+            calls: None,
+        }
+    }
+}
+
+/// Preserve valid syntax sites in a recovery tree, but disclose its incomplete
+/// enumeration. A malformed call node itself is never promoted into a fact.
+pub fn find_call_facts(lang: &str, source: &[u8], path: &Path) -> Result<CallFacts, LangError> {
+    let mut facts = CallFacts {
+        sites: Vec::new(),
+        has_parse_errors: false,
+        unsupported_calls: 0,
+    };
+    if lang == "html" {
+        facts.has_parse_errors = parse_source(lang, source, path)?.1.root_node().has_error();
+    }
+    for (config, tree, _) in parse_units(lang, source, path)? {
+        facts.has_parse_errors |= tree.root_node().has_error();
+        let calls = extract::find_call_sites(config.name, &tree, source);
+        facts.sites.extend(calls.sites);
+        facts.unsupported_calls += calls.unsupported_calls;
+    }
+    Ok(facts)
+}
+
+pub type TextRegion = (usize, usize, &'static str);
+
+/// Text provenance for lexical context matches. Interpolation expressions are
+/// not labelled strings: only literal content nodes are recorded.
+pub fn text_regions(
+    lang: &str,
+    source: &[u8],
+    path: &Path,
+) -> Result<(Vec<TextRegion>, bool), LangError> {
+    if lang == "markdown" {
+        return Ok((vec![(0, source.len(), "document_text")], false));
+    }
+    let mut regions = Vec::new();
+    let mut partial = false;
+    for (_, tree, _) in parse_units(lang, source, path)? {
+        partial |= tree.root_node().has_error();
+        let mut stack = vec![tree.root_node()];
+        while let Some(node) = stack.pop() {
+            let kind = node.kind();
+            let field = if kind.contains("comment") {
+                Some("comment_text")
+            } else if matches!(
+                kind,
+                "string_content" | "string_fragment" | "raw_string_content" | "char_literal"
+            ) {
+                Some("string_text")
+            } else if node.is_error() {
+                Some("unparsed_text")
+            } else {
+                None
+            };
+            if let Some(field) = field {
+                regions.push((node.start_byte(), node.end_byte(), field));
+            }
+            for i in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(i as u32) {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+    regions.sort_by_key(|(start, end, _)| end - start);
+    Ok((regions, partial))
+}
+
+#[cfg(test)]
+pub fn find_calls(lang: &str, source: &[u8], path: &Path) -> Result<Vec<CallSite>, LangError> {
+    find_call_facts(lang, source, path).map(|facts| facts.sites)
 }
 
 /// Parse source and find all identifier nodes whose text matches `name`.
@@ -442,6 +651,7 @@ pub struct FileParse {
     /// reported separately so an unresolvable import is never invented
     /// (roadmap §8).
     pub imports: Vec<String>,
+    pub task: TaskFacts,
 }
 
 /// Tree-sitter pattern capturing import/include targets as `@import`.
@@ -525,22 +735,69 @@ fn extract_imports(
     run(query)
 }
 
+pub fn parse_task_facts(lang: &str, source: &[u8], path: &Path) -> Result<TaskFacts, LangError> {
+    let mut task = TaskFacts::empty(source);
+    let mut calls = supports_calls(lang).then(CallFacts::empty);
+    if lang == "markdown" {
+        parse_source(lang, source, path)?;
+        return Ok(task);
+    }
+    for (config, tree, _) in parse_units(lang, source, path)? {
+        if let Some(facts) = &mut calls {
+            facts.has_parse_errors |= tree.root_node().has_error();
+            let extracted = extract::find_call_sites(config.name, &tree, source);
+            facts.sites.extend(extracted.sites);
+            facts.unsupported_calls += extracted.unsupported_calls;
+        }
+    }
+    task.calls = calls.map(CachedCallFacts::from_facts);
+    Ok(task)
+}
+
 /// Parse a file and extract symbols for the given language.
 /// `path` is used to distinguish .tsx from .ts for grammar selection.
 pub fn parse_and_extract(lang: &str, source: &[u8], path: &Path) -> Result<FileParse, LangError> {
+    parse_file(lang, source, path, true)
+}
+pub fn parse_index_facts(lang: &str, source: &[u8], path: &Path) -> Result<FileParse, LangError> {
+    parse_file(lang, source, path, false)
+}
+fn parse_file(
+    lang: &str,
+    source: &[u8],
+    path: &Path,
+    include_task: bool,
+) -> Result<FileParse, LangError> {
     if lang == "markdown" {
         parse_source(lang, source, path)?;
         return Ok(FileParse {
             symbols: markdown::extract_headings(source),
             imports: Vec::new(),
+            task: if include_task {
+                TaskFacts::empty(source)
+            } else {
+                TaskFacts::placeholder()
+            },
         });
     }
 
     let mut result = FileParse {
         symbols: Vec::new(),
         imports: Vec::new(),
+        task: if include_task {
+            TaskFacts::empty(source)
+        } else {
+            TaskFacts::placeholder()
+        },
     };
+    let mut call_facts = (include_task && supports_calls(lang)).then(CallFacts::empty);
     for (config, tree, grammar_name) in parse_units(lang, source, path)? {
+        if let Some(facts) = &mut call_facts {
+            facts.has_parse_errors |= tree.root_node().has_error();
+            let calls = extract::find_call_sites(config.name, &tree, source);
+            facts.sites.extend(calls.sites);
+            facts.unsupported_calls += calls.unsupported_calls;
+        }
         let parsed = extract_unit(config, &tree, grammar_name, source)?;
         result.symbols.extend(parsed.symbols);
         for import in parsed.imports {
@@ -549,6 +806,7 @@ pub fn parse_and_extract(lang: &str, source: &[u8], path: &Path) -> Result<FileP
             }
         }
     }
+    result.task.calls = call_facts.map(CachedCallFacts::from_facts);
     Ok(result)
 }
 
@@ -569,6 +827,7 @@ fn extract_unit(
             return Ok(FileParse {
                 symbols: extract::extract_symbols(config, query, tree, source),
                 imports,
+                task: TaskFacts::empty(source),
             });
         }
     }
@@ -584,8 +843,12 @@ fn extract_unit(
     Ok(FileParse {
         symbols: extract::extract_symbols(config, query, tree, source),
         imports,
+        task: TaskFacts::empty(source),
     })
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod call_tests;

@@ -882,17 +882,45 @@ pub fn relation_report(
     json: bool,
     pg: &Pagination,
 ) -> i32 {
-    let warnings = report.warnings;
-    let paged = paginate(report.rows, pg);
+    let mut warnings = report.warnings;
+    let mut paged = paginate(report.rows, pg);
+
+    // Candidate identities must not be elided just to fit a page. Instead,
+    // shorten the page while keeping the exact total and a runnable next offset.
+    // --all opts out. An irreducible single row/metadata block is retained with
+    // explicit overflow disclosure rather than returning a non-progressing page.
+    if pg.limit.is_some() {
+        let mut budget_disclosed = false;
+        loop {
+            let envelope = Envelope::new(
+                QueryInfo::new(kind, Some(name.to_string())),
+                index.freshness.clone(),
+                paged.page_info(),
+                &paged.items,
+            )
+            .with_warnings(warnings.clone())
+            .with_next_queries(relation_next_queries(&paged));
+            if serde_json::to_vec_pretty(&envelope)
+                .expect("relation envelope is serializable")
+                .len()
+                < 16 * 1024
+            {
+                break;
+            }
+            if !budget_disclosed {
+                warnings.push("relation_output_budget: 16384 bytes; page shortened without dropping candidate evidence; use next_queries or --all".into());
+                budget_disclosed = true;
+            }
+            if paged.items.len() <= 1 {
+                warnings.push("relation_output_budget: irreducible row or metadata exceeds budget; evidence retained".into());
+                break;
+            }
+            paged.items.pop();
+        }
+    }
 
     if json {
-        let mut next_queries = Vec::new();
-        if paged.was_truncated() {
-            next_queries.push(command_with_offset(paged.offset + paged.items.len()));
-            if paged.limit.is_some() {
-                next_queries.push(command_with_all());
-            }
-        }
+        let next_queries = relation_next_queries(&paged);
         let envelope = Envelope::new(
             QueryInfo::new(kind, Some(name.to_string())),
             index.freshness.clone(),
@@ -928,6 +956,17 @@ pub fn relation_report(
         );
     }
     0
+}
+
+fn relation_next_queries(paged: &Paginated<crate::relations::EdgeRow>) -> Vec<String> {
+    let mut queries = Vec::new();
+    if paged.was_truncated() {
+        queries.push(command_with_offset(paged.offset + paged.items.len()));
+        if paged.limit.is_some() {
+            queries.push(command_with_all());
+        }
+    }
+    queries
 }
 
 // --- Repository map ---
@@ -1157,7 +1196,7 @@ pub(crate) fn is_test_path(path: &Path) -> bool {
 }
 
 /// Check if a file path looks like a test file based on naming conventions.
-fn is_test_file(path: &Path) -> bool {
+pub(crate) fn is_test_file(path: &Path) -> bool {
     for component in path.components() {
         if let std::path::Component::Normal(s) = component {
             let s = s.to_str().unwrap_or("");

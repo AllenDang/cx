@@ -3,7 +3,7 @@ use ignore::WalkBuilder;
 use rayon::prelude::*;
 use redb::{Database, ReadOnlyDatabase, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Read;
@@ -12,11 +12,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::language::{
-    LangError, detect_language, download_names_for, parse_and_extract, primary_extension,
+    LangError, detect_language, download_names_for, parse_and_extract, parse_index_facts,
+    primary_extension,
 };
 
-// Invalidate pre-HTML indexes, whose file inventory omitted embedded scripts.
-pub const INDEX_VERSION: u32 = 13;
+// Rebuild once to persist task facts extracted from the same content/AST.
+pub const INDEX_VERSION: u32 = 16;
 
 /// Compute the cache path for a given project root.
 /// Returns `~/.cache/cx/indexes/<hash>.db` where hash is derived from the
@@ -33,6 +34,72 @@ pub fn cache_path_for(root: &Path) -> PathBuf {
 
 fn index_cache_dir() -> PathBuf {
     crate::lang::cx_cache_dir().join("indexes")
+}
+
+pub(crate) fn task_cache_path(root: &Path) -> PathBuf {
+    cache_path_for(root).with_extension("tasks.zst")
+}
+
+#[derive(Serialize, Deserialize)]
+struct TaskCache {
+    version: u32,
+    generation: u64,
+    entries: BTreeMap<PathBuf, (u64, crate::language::TaskFacts)>,
+}
+
+fn encode_task_cache(
+    entries: &HashMap<PathBuf, FileData>,
+    generation: u64,
+) -> Result<Vec<u8>, String> {
+    let cache = TaskCache {
+        version: crate::language::TASK_FACTS_VERSION,
+        generation,
+        entries: entries
+            .iter()
+            .map(|(path, data)| (path.clone(), (data.meta.content_hash, data.task.clone())))
+            .collect(),
+    };
+    let raw =
+        bincode::serialize(&cache).map_err(|e| format!("failed to serialize task cache: {e}"))?;
+    zstd::encode_all(raw.as_slice(), 3).map_err(|e| format!("failed to compress task cache: {e}"))
+}
+fn write_task_cache(root: &Path, bytes: &[u8]) -> Result<(), String> {
+    let path = task_cache_path(root);
+    let temp = path.with_extension(format!("tasks.{}.tmp", std::process::id()));
+    let mut file =
+        fs::File::create(&temp).map_err(|e| format!("failed to create task cache: {e}"))?;
+    use std::io::Write;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("failed to write task cache: {e}"))?;
+    fs::rename(&temp, &path).map_err(|e| format!("failed to install task cache: {e}"))
+}
+fn load_task_cache(root: &Path, generation: u64, entries: &mut HashMap<PathBuf, FileData>) -> bool {
+    let Ok(file) = fs::File::open(task_cache_path(root)) else {
+        return false;
+    };
+    let Ok(raw) = zstd::decode_all(file) else {
+        return false;
+    };
+    let Ok(cache) = bincode::deserialize::<TaskCache>(&raw) else {
+        return false;
+    };
+    if cache.version != crate::language::TASK_FACTS_VERSION
+        || cache.generation != generation
+        || cache.entries.len() != entries.len()
+    {
+        return false;
+    }
+    for (path, (hash, task)) in cache.entries {
+        let Some(data) = entries.get_mut(&path) else {
+            return false;
+        };
+        if data.meta.content_hash != hash {
+            return false;
+        }
+        data.task = task;
+    }
+    true
 }
 
 const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
@@ -135,7 +202,7 @@ impl Freshness {
 }
 
 enum CrawlResult {
-    Indexed(PathBuf, FileData),
+    Indexed(PathBuf, Box<FileData>),
     MissingLang(String),
     ReadFailed(PathBuf, std::io::Error),
     ParseFailed(PathBuf),
@@ -148,6 +215,8 @@ pub struct FileData {
     /// Import/include targets as written in the source (roadmap §8).
     /// Empty for languages whose imports cx does not model.
     pub imports: Vec<String>,
+    /// Content-bound raw facts extracted with the same AST as symbols/imports.
+    pub task: crate::language::TaskFacts,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -412,6 +481,7 @@ fn load_entries(db: &impl ReadableDatabase) -> Option<(HashMap<PathBuf, FileData
                         meta,
                         symbols: Vec::new(),
                         imports: Vec::new(),
+                        task: crate::language::TaskFacts::placeholder(),
                     },
                 );
             }
@@ -654,7 +724,7 @@ fn changed_during_refresh() -> std::io::Error {
     )
 }
 
-fn read_beneath(root: &Path, rel_path: &Path) -> std::io::Result<(Vec<u8>, SystemTime)> {
+pub(crate) fn read_beneath(root: &Path, rel_path: &Path) -> std::io::Result<(Vec<u8>, SystemTime)> {
     read_beneath_with_hook(root, rel_path, || {})
 }
 
@@ -783,6 +853,92 @@ fn scan_named_paths(
 }
 
 impl Index {
+    /// Load or lazily build content/generation-bound task facts. Basic queries
+    /// never pay their memory or indexing cost.
+    pub fn ensure_task_facts(&mut self) -> Result<(), String> {
+        if load_task_cache(&self.root, self.freshness.generation, &mut self.entries) {
+            return Ok(());
+        }
+        let mut paths: Vec<_> = self.entries.keys().cloned().collect();
+        paths.sort();
+        if !paths.is_empty() {
+            eprintln!("cx: building task facts for {} files...", paths.len());
+        }
+        let results: Vec<_> = paths
+            .par_iter()
+            .map(|path| {
+                let (source, _) = read_beneath(&self.root, path)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                let data = &self.entries[path];
+                if content_hash(&source) != data.meta.content_hash {
+                    return Err(format!(
+                        "{} changed while building task facts",
+                        path.display()
+                    ));
+                }
+                crate::language::parse_task_facts(&data.meta.language, &source, path)
+                    .map(|task| (path.clone(), task))
+                    .map_err(|e| format!("{}: {e}", path.display()))
+            })
+            .collect();
+        for result in results {
+            let (path, task) = result?;
+            self.entries.get_mut(&path).unwrap().task = task;
+        }
+        let cache = encode_task_cache(&self.entries, self.freshness.generation)?;
+        write_task_cache(&self.root, &cache)
+    }
+
+    /// Immutable Git/source views for task analysis; never persisted to redb.
+    pub fn from_sources(
+        root: &Path,
+        sources: &std::collections::BTreeMap<PathBuf, Vec<u8>>,
+    ) -> Self {
+        let mut index = Self {
+            root: root.to_path_buf(),
+            db: None,
+            entries: HashMap::new(),
+            freshness: Freshness::empty(FreshnessMode::Verified),
+            named_path_checks: Vec::new(),
+            refresh_error: None,
+            updated: Vec::new(),
+            removed: Vec::new(),
+        };
+        index.freshness.mode = "snapshot";
+        for (path, source) in sources {
+            let Some(lang) = detect_language(path) else {
+                continue;
+            };
+            index.freshness.files_checked += 1;
+            match parse_and_extract(lang, source, path) {
+                Ok(parsed) => {
+                    index.entries.insert(
+                        path.clone(),
+                        FileData {
+                            meta: FileEntry::new(
+                                UNIX_EPOCH,
+                                source.len() as u64,
+                                content_hash(source),
+                                lang,
+                            ),
+                            symbols: parsed.symbols,
+                            imports: parsed.imports,
+                            task: parsed.task,
+                        },
+                    );
+                }
+                Err(LangError::NotInstalled(_)) => {
+                    index.freshness.files_skipped_missing_grammar += 1
+                }
+                Err(_) => {
+                    index.refresh_error =
+                        Some(format!("could not parse snapshot file {}", path.display()))
+                }
+            }
+        }
+        index
+    }
+
     /// Load or build the index for the given project root.
     ///
     /// `root` is canonicalized first so the cache key, `Index.root`, and the
@@ -927,10 +1083,10 @@ impl Index {
             .par_iter()
             .map(|(abs_path, rel_path, lang, mtime)| {
                 let result = match fs::read(abs_path) {
-                    Ok(source) => match parse_and_extract(lang, &source, abs_path) {
+                    Ok(source) => match parse_index_facts(lang, &source, abs_path) {
                         Ok(parse) => CrawlResult::Indexed(
                             rel_path.clone(),
-                            FileData {
+                            Box::new(FileData {
                                 // Size and hash come from the bytes just read,
                                 // so recording them costs no extra I/O.
                                 meta: FileEntry::new(
@@ -941,7 +1097,8 @@ impl Index {
                                 ),
                                 symbols: parse.symbols,
                                 imports: parse.imports,
-                            },
+                                task: crate::language::TaskFacts::placeholder(),
+                            }),
                         ),
                         Err(LangError::NotInstalled(name)) => CrawlResult::MissingLang(name),
                         Err(_) => CrawlResult::ParseFailed(abs_path.clone()),
@@ -964,7 +1121,7 @@ impl Index {
         for result in results {
             match result {
                 CrawlResult::Indexed(rel_path, data) => {
-                    self.entries.insert(rel_path, data);
+                    self.entries.insert(rel_path, *data);
                 }
                 CrawlResult::MissingLang(name) => {
                     *missing_langs.entry(name).or_insert(0) += 1;
@@ -1044,7 +1201,7 @@ impl Index {
                     }
                 },
             };
-            let parse = match parse_and_extract(file.lang, &source, &abs_path) {
+            let parse = match parse_index_facts(file.lang, &source, &abs_path) {
                 Ok(parse) => parse,
                 Err(LangError::NotInstalled(name)) => {
                     missing_langs.insert(name);
@@ -1069,6 +1226,7 @@ impl Index {
                     ),
                     symbols: parse.symbols,
                     imports: parse.imports,
+                    task: crate::language::TaskFacts::placeholder(),
                 },
             );
             changed_paths.push(file.rel_path.clone());
@@ -1185,6 +1343,9 @@ impl Index {
             }
             return;
         }
+        // Task facts are generation-bound; any source inventory change makes
+        // the old sidecar unusable. Rebuild lazily on the next task query.
+        let _ = fs::remove_file(task_cache_path(&self.root));
 
         self.freshness.generation = next_generation;
         self.freshness.files_updated = changed_paths.len();
@@ -1259,7 +1420,10 @@ impl Index {
         })();
 
         match persist_result {
-            Ok(()) => self.freshness.generation = next_generation,
+            Ok(()) => {
+                self.freshness.generation = next_generation;
+                let _ = fs::remove_file(task_cache_path(&self.root));
+            }
             Err(error) => {
                 eprintln!("cx: {error}");
                 self.refresh_error = Some(error);
@@ -1760,6 +1924,124 @@ mod tests {
         // Reload — should detect version mismatch and rebuild
         let idx2 = Index::load_or_build(dir.path(), &metadata_req());
         assert!(idx2.entries.contains_key(&PathBuf::from("src/a.rs")));
+    }
+
+    #[test]
+    fn missing_task_sidecar_rebuilds_lazily_without_base_generation_change() {
+        init_grammar_cache();
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("a.rs"),
+            "fn leaf() {}\nfn entry() { leaf(); }\n",
+        )
+        .unwrap();
+        let mut first = Index::load_or_build(dir.path(), &metadata_req());
+        assert!(first.entries[&PathBuf::from("a.rs")].task.calls.is_none());
+        first.ensure_task_facts().unwrap();
+        assert_eq!(
+            first.entries[&PathBuf::from("a.rs")]
+                .task
+                .calls
+                .as_ref()
+                .unwrap()
+                .site_count(),
+            1
+        );
+        let generation = first.freshness.generation;
+        drop(first);
+        fs::remove_file(task_cache_path(dir.path())).unwrap();
+        let mut rebuilt = Index::load_or_build(dir.path(), &metadata_req());
+        assert_eq!(rebuilt.freshness.files_updated, 0);
+        assert_eq!(rebuilt.freshness.generation, generation);
+        assert!(rebuilt.entries[&PathBuf::from("a.rs")].task.calls.is_none());
+        rebuilt.ensure_task_facts().unwrap();
+        assert_eq!(
+            rebuilt.entries[&PathBuf::from("a.rs")]
+                .task
+                .calls
+                .as_ref()
+                .unwrap()
+                .expand()
+                .sites[0]
+                .name,
+            "leaf"
+        );
+        assert_eq!(
+            rebuilt.entries[&PathBuf::from("a.rs")].task.line_starts,
+            vec![0, 13, 36]
+        );
+        drop(rebuilt);
+        let mut warm = Index::load_or_build(dir.path(), &metadata_req());
+        assert!(warm.entries[&PathBuf::from("a.rs")].task.calls.is_none());
+        warm.ensure_task_facts().unwrap();
+        assert_eq!(warm.freshness.files_updated, 0);
+        assert_eq!(warm.freshness.generation, generation);
+        assert_eq!(
+            warm.entries[&PathBuf::from("a.rs")]
+                .task
+                .calls
+                .as_ref()
+                .unwrap()
+                .site_count(),
+            1
+        );
+    }
+
+    #[test]
+    fn version_13_missing_reference_return_facts_are_rebuilt() {
+        init_grammar_cache();
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("a.cpp"),
+            "int value; int& cache() { return value; }\n",
+        )
+        .unwrap();
+        let index = Index::load_or_build(dir.path(), &metadata_req());
+        let old_symbols: Vec<_> = index.entries[&PathBuf::from("a.cpp")]
+            .symbols
+            .iter()
+            .filter(|s| s.name != "cache")
+            .cloned()
+            .collect();
+        drop(index);
+        let db = Database::create(cache_path_for(dir.path())).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            txn.open_table(META_TABLE)
+                .unwrap()
+                .insert("version", 13u32.to_le_bytes().as_slice())
+                .unwrap();
+            let bytes = bincode::serialize(&old_symbols).unwrap();
+            txn.open_table(SYMBOLS_TABLE)
+                .unwrap()
+                .insert("a.cpp", bytes.as_slice())
+                .unwrap();
+        }
+        txn.commit().unwrap();
+        drop(db);
+        let rebuilt = Index::load_or_build(dir.path(), &metadata_req());
+        assert_eq!(
+            rebuilt.entries[&PathBuf::from("a.cpp")]
+                .symbols
+                .iter()
+                .filter(|s| s.name == "cache")
+                .count(),
+            1
+        );
+        assert_eq!(rebuilt.freshness.files_updated, 1);
+        let generation = rebuilt.freshness.generation;
+        drop(rebuilt);
+        let warm = Index::load_or_build(dir.path(), &metadata_req());
+        assert_eq!(warm.freshness.files_updated, 0);
+        assert_eq!(warm.freshness.generation, generation);
+        assert_eq!(
+            warm.entries[&PathBuf::from("a.cpp")]
+                .symbols
+                .iter()
+                .filter(|s| s.name == "cache")
+                .count(),
+            1
+        );
     }
 
     #[test]

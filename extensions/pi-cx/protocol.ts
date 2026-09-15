@@ -25,6 +25,20 @@ export function parseEnvelope(raw: string): CxEnvelope {
   if (!envelope.query || !envelope.page || !envelope.freshness || !("error" in envelope)) {
     throw new ProtocolError("cx JSON envelope is missing required fields");
   }
+  const task = ["impact", "changes", "context"].includes(envelope.query.kind);
+  if (task) {
+    const analysis = envelope.analysis;
+    if (!analysis || typeof analysis !== "object" || typeof analysis.complete !== "boolean") throw new ProtocolError("task envelope is missing analysis completeness");
+    const page = envelope.page;
+    if (!Number.isSafeInteger(page.offset) || page.offset < 0 || typeof page.truncated !== "boolean"
+        || (page.limit !== null && (!Number.isSafeInteger(page.limit) || page.limit < 1))) throw new ProtocolError("invalid task page");
+    if (analysis.complete ? (!Number.isSafeInteger(page.total) || page.total! < 0) : page.total !== null) throw new ProtocolError("task total must be exact only for complete analysis; otherwise null");
+    if (analysis.discovered_count !== null && (!Number.isSafeInteger(analysis.discovered_count) || analysis.discovered_count! < 0)) throw new ProtocolError("task analysis requires discovered_count");
+    if (analysis.discovered_count === null && analysis.output_truncated !== true) throw new ProtocolError("unknown discovered count requires transport truncation disclosure");
+    if (analysis.complete && page.total !== analysis.discovered_count) throw new ProtocolError("task total differs from discovered_count");
+  } else if (envelope.page.total === null) {
+    throw new ProtocolError("legacy query total must be exact");
+  }
   return envelope as CxEnvelope;
 }
 

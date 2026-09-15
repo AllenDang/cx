@@ -1,17 +1,36 @@
+fn parse_positive_limit(text: &str) -> Result<usize, String> {
+    text.parse::<usize>()
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or_else(|| "limit must be a positive integer".into())
+}
+
+mod changes;
+mod context;
+mod impact;
 mod index;
 mod lang;
 mod language;
 mod map;
 mod output;
 mod query;
+mod relation_index;
 mod relations;
+mod snapshot;
+mod task;
 mod util;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
+
+#[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum Detail {
+    Compact,
+    Full,
+}
 
 #[derive(Parser)]
 #[command(name = "cx", version, about = "Semantic code navigation for AI agents")]
@@ -28,7 +47,7 @@ struct Cli {
     json: bool,
 
     /// Max number of results to return (overrides per-command default)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, value_parser = parse_positive_limit)]
     limit: Option<usize>,
 
     /// Skip the first N results
@@ -135,6 +154,31 @@ enum Commands {
         #[arg(long)]
         scope: Option<String>,
     },
+    /// Bounded multi-hop reverse call impact, with supported/possible witnesses
+    Impact {
+        #[arg(long, allow_hyphen_values = true)]
+        name: String,
+        #[arg(long, allow_hyphen_values = true)]
+        scope: Option<String>,
+        #[arg(long, allow_hyphen_values = true)]
+        file: Option<PathBuf>,
+        #[arg(long, requires = "file", conflicts_with = "byte_offset", value_parser = clap::value_parser!(u32).range(1..))]
+        line: Option<u32>,
+        #[arg(long, requires = "file", conflicts_with = "line")]
+        byte_offset: Option<usize>,
+        #[arg(long, default_value = "3", value_parser = clap::value_parser!(u32).range(0..=32))]
+        max_depth: u32,
+        #[arg(long, default_value = "1000", value_parser = clap::value_parser!(u32).range(1..=10000))]
+        max_nodes: u32,
+        #[arg(long, default_value = "20000", value_parser = clap::value_parser!(u32).range(1..=1000000))]
+        max_edges: u32,
+        #[arg(long, allow_hyphen_values = true)]
+        snapshot: Option<String>,
+        #[arg(long, default_value = "32768", value_parser = clap::value_parser!(u32).range(1024..=1048576))]
+        byte_budget: u32,
+        #[arg(long, value_enum, default_value = "compact")]
+        detail: Detail,
+    },
     /// Bounded repository map: subsystems, sizes, and resolved import edges
     Map {
         /// Directory depth used to group files into subsystems (default 1)
@@ -152,6 +196,46 @@ enum Commands {
         /// Exclude paths matching a glob (repeatable)
         #[arg(long, value_name = "GLOB")]
         exclude: Vec<String>,
+    },
+    /// Compare tracked Git/working bytes and map both sides to changed symbols
+    Changes {
+        #[arg(long, default_value = "HEAD", allow_hyphen_values = true)]
+        base: String,
+        #[arg(long, conflicts_with = "staged", allow_hyphen_values = true)]
+        head: Option<String>,
+        #[arg(long, conflicts_with = "head")]
+        staged: bool,
+        #[arg(long, requires = "head")]
+        merge_base: bool,
+        #[arg(long)]
+        impact: bool,
+        #[arg(long, default_value = "2", value_parser = clap::value_parser!(u32).range(0..=32))]
+        max_depth: u32,
+        #[arg(long, allow_hyphen_values = true)]
+        snapshot: Option<String>,
+        #[arg(long, default_value = "32768", value_parser = clap::value_parser!(u32).range(1024..=1048576))]
+        byte_budget: u32,
+        #[arg(long, value_enum, default_value = "compact")]
+        detail: Detail,
+    },
+    /// Retrieve source-backed task context by exact names, paths and lexical subwords
+    Context {
+        #[arg(long, allow_hyphen_values = true)]
+        query: String,
+        #[arg(long)]
+        include_body: bool,
+        #[arg(long)]
+        include_vendor: bool,
+        #[arg(long)]
+        include_generated: bool,
+        #[arg(long)]
+        include_fixtures: bool,
+        #[arg(long, allow_hyphen_values = true)]
+        snapshot: Option<String>,
+        #[arg(long, default_value = "16384", value_parser = clap::value_parser!(u32).range(1024..=1048576))]
+        byte_budget: u32,
+        #[arg(long, value_enum, default_value = "compact")]
+        detail: Detail,
     },
     /// Re-index the named paths immediately, by content hash
     Refresh {
@@ -374,6 +458,72 @@ fn main() {
                 &resolve_pagination(Some(50)),
             )
         }
+        Commands::Impact {
+            name,
+            scope,
+            file,
+            line,
+            byte_offset,
+            max_depth,
+            max_nodes,
+            max_edges,
+            snapshot,
+            byte_budget,
+            detail,
+        } => {
+            let root = resolve_root(&cli.root, None);
+            let mut idx = index::Index::load_or_build(&root, &freshness);
+            if let Err(message) = idx.ensure_task_facts() {
+                let report = task::Report::<serde_json::Value>::failure(task::Failure::new(
+                    output::ErrorCode::AnalysisFailed,
+                    message,
+                ));
+                process::exit(task::emit(
+                    &idx.freshness,
+                    "impact",
+                    &name,
+                    report,
+                    &resolve_pagination(Some(50)),
+                    cli.json,
+                    byte_budget as usize,
+                ));
+            }
+            let options = impact::Options {
+                name: name.clone(),
+                scope,
+                file,
+                line: line.map(|n| n as usize),
+                byte_offset,
+                max_depth: max_depth as usize,
+                max_nodes: max_nodes as usize,
+                max_edges: max_edges as usize,
+                snapshot,
+                no_tests: cli.no_tests,
+            };
+            let report = impact::run(&idx, &options);
+            let pg = resolve_pagination(Some(50));
+            if detail == Detail::Full {
+                task::emit(
+                    &idx.freshness,
+                    "impact",
+                    &name,
+                    report,
+                    &pg,
+                    cli.json,
+                    byte_budget as usize,
+                )
+            } else {
+                task::emit(
+                    &idx.freshness,
+                    "impact",
+                    &name,
+                    impact::compact(report),
+                    &pg,
+                    cli.json,
+                    byte_budget as usize,
+                )
+            }
+        }
         Commands::Map {
             depth,
             include_vendor,
@@ -391,6 +541,118 @@ fn main() {
                 exclude_globs: exclude,
             };
             query::map_report(&idx, &opts, cli.json, &resolve_pagination(Some(40)))
+        }
+        Commands::Changes {
+            base,
+            head,
+            staged,
+            merge_base,
+            impact,
+            max_depth,
+            snapshot,
+            byte_budget,
+            detail,
+        } => {
+            let root = resolve_root(&cli.root, None);
+            let opts = changes::Options {
+                base,
+                head,
+                staged,
+                merge_base,
+                impact,
+                max_depth: max_depth as usize,
+                snapshot,
+                no_tests: cli.no_tests,
+            };
+            let (report, proof) = match changes::run(&root, &opts) {
+                Ok(result) => result,
+                Err(error) => (
+                    task::Report::<changes::Row>::failure(error),
+                    index::Freshness::empty(cli.fresh),
+                ),
+            };
+            let pg = resolve_pagination(Some(50));
+            if detail == Detail::Full {
+                task::emit(
+                    &proof,
+                    "changes",
+                    &opts.base,
+                    report,
+                    &pg,
+                    cli.json,
+                    byte_budget as usize,
+                )
+            } else {
+                task::emit(
+                    &proof,
+                    "changes",
+                    &opts.base,
+                    changes::compact(report),
+                    &pg,
+                    cli.json,
+                    byte_budget as usize,
+                )
+            }
+        }
+        Commands::Context {
+            query,
+            include_body,
+            include_vendor,
+            include_generated,
+            include_fixtures,
+            snapshot,
+            byte_budget,
+            detail,
+        } => {
+            let root = resolve_root(&cli.root, None);
+            let mut idx = index::Index::load_or_build(&root, &freshness);
+            if let Err(message) = idx.ensure_task_facts() {
+                let report = task::Report::<serde_json::Value>::failure(task::Failure::new(
+                    output::ErrorCode::AnalysisFailed,
+                    message,
+                ));
+                process::exit(task::emit(
+                    &idx.freshness,
+                    "context",
+                    &query,
+                    report,
+                    &resolve_pagination(Some(10)),
+                    cli.json,
+                    byte_budget as usize,
+                ));
+            }
+            let options = context::Options {
+                query: query.clone(),
+                include_body,
+                include_vendor,
+                include_generated,
+                include_fixtures,
+                snapshot,
+                no_tests: cli.no_tests,
+            };
+            let report = context::run(&idx, &options);
+            let pg = resolve_pagination(Some(10));
+            if detail == Detail::Full {
+                task::emit(
+                    &idx.freshness,
+                    "context",
+                    &query,
+                    report,
+                    &pg,
+                    cli.json,
+                    byte_budget as usize,
+                )
+            } else {
+                task::emit(
+                    &idx.freshness,
+                    "context",
+                    &query,
+                    context::compact(report),
+                    &pg,
+                    cli.json,
+                    byte_budget as usize,
+                )
+            }
         }
         Commands::Refresh { ref paths } => {
             // Deliberately not derived from the path arguments: refresh operates
@@ -426,16 +688,20 @@ fn main() {
                     0
                 }
                 CacheAction::Clean => {
-                    if path.exists() {
-                        if let Err(e) = fs::remove_file(&path) {
-                            eprintln!("cx: failed to remove cache: {e}");
-                            1
-                        } else {
-                            eprintln!("cx: removed {}", path.display());
-                            0
+                    let task = index::task_cache_path(&root);
+                    let mut failed = false;
+                    for cached in [&path, &task] {
+                        if cached.exists()
+                            && let Err(e) = fs::remove_file(cached)
+                        {
+                            eprintln!("cx: failed to remove {}: {e}", cached.display());
+                            failed = true;
                         }
+                    }
+                    if failed {
+                        1
                     } else {
-                        eprintln!("cx: no cached index for this project");
+                        eprintln!("cx: cache clean for {}", root.display());
                         0
                     }
                 }

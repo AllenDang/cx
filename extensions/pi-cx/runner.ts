@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { parseEnvelope, ProtocolError } from "./protocol.js";
+import { cxCacheDir } from "./grammars.js";
 import type { CxEnvelope, CxRunResult, RunDetails } from "./types.js";
 
 export const MAX_STDOUT_BYTES = 50 * 1024;
@@ -53,6 +54,9 @@ function terminateProcessTree(child: ReturnType<typeof spawn>, force = false): v
 function limitedEnvironment(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of ["HOME", "PATH", "TMPDIR", "CX_CACHE_DIR"]) if (process.env[key]) env[key] = process.env[key];
+  // language-pack 1.16 uses a versioned download directory. Explicitly prefer
+  // the flat, manifest-verified libraries seeded by this extension, offline.
+  env.TREE_SITTER_LANGUAGE_PACK_LIBS_DIR = join(cxCacheDir(), "grammars");
   return env;
 }
 
@@ -131,6 +135,22 @@ export async function runCx(options: RunCxOptions): Promise<CxRunResult> {
     }
     const schema = prefix.match(/"schema_version"\s*:\s*(\d+)/)?.[1];
     if (schema !== "1") throw new ProtocolError(`incompatible or missing cx schema in oversized output (${schema ?? "unknown"}); reinstall pi-cx`);
+    if (["impact", "changes", "context"].includes(options.command)) {
+      const offsetIndex = options.args?.indexOf("--offset") ?? -1;
+      const requestedOffset = Number(offsetIndex >= 0 ? options.args?.[offsetIndex + 1] : options.args?.find(a => a.startsWith("--offset="))?.slice(9) ?? 0);
+      const offset = Number.isSafeInteger(requestedOffset) && requestedOffset >= 0 ? requestedOffset : 0;
+      const fallback = {
+        schema_version: 1,
+        query: { kind: options.command }, freshness: {},
+        page: { total: null, offset, limit: null, truncated: false },
+        results: [], warnings: ["Transport output limit reached. Analysis facts and totals are unknown here; inspect the saved output, or lower byteBudget. Offset alone cannot resume a truncated traversal."],
+        next_queries: [], error: null,
+        analysis: { complete: false, discovered_count: null, output_truncated: true },
+        truncation: { reason: "pi_output_limit", original_bytes: bytes, original_lines: lines, full_output_path: outputPath },
+      };
+      const raw = JSON.stringify(fallback, null, 2);
+      return { raw, envelope: parseEnvelope(raw), details };
+    }
     const fallback = {
       schema_version: 1,
       truncation: { reason: "pi_output_limit", original_bytes: bytes, original_lines: lines, full_output_path: outputPath },

@@ -33,10 +33,10 @@ irm https://raw.githubusercontent.com/ind-igo/cx/master/install.ps1 | iex
 This repository is also a Git Pi package named `pi-cx` for macOS, Linux, and Windows on arm64 and x86_64:
 
 ```bash
-pi install git:github.com/AllenDang/cx@v0.7.10
+pi install git:github.com/AllenDang/cx@v0.8.0
 ```
 
-It registers eight strongly typed `cx_*` tools and the read-only `/cx-status` diagnostic. The package downloads a version-pinned release asset during installation, verifies the bundled cx binary and Tree-sitter grammars, and uses cx's standard shared cache. It never falls back to a host `cx` on `PATH`. See [`extensions/pi-cx/README.md`](extensions/pi-cx/README.md) for security, cache, grammar, and troubleshooting details.
+It registers eleven strongly typed `cx_*` tools, including bounded `impact`, tracked Git `changes`, and lexical task `context`, plus the read-only `/cx-status` diagnostic. The package downloads a version-pinned release asset during installation, verifies the bundled cx binary and Tree-sitter grammars, and uses cx's standard shared cache. It never falls back to a host `cx` on `PATH`. See [`extensions/pi-cx/README.md`](extensions/pi-cx/README.md) for security, cache, grammar, and troubleshooting details.
 
 ## Agent integration
 
@@ -309,9 +309,9 @@ Every edge says how it was established:
 
 **cx never guesses a target.** When candidates cannot be narrowed to one, `to` is empty and `ambiguous_candidates` lists them all -- so `runner.run()` is reported as an unresolved call rather than being bound to whichever `run` happened to sort first. Candidates are also restricted to the caller's language, so a C++ call never points at a TypeScript method.
 
-`cx callees --name X` lists calls written inside X's body. If several symbols share the name X it returns no rows and names the candidates, because reading one arbitrary body would answer a different question -- narrow it with `--scope`.
+`cx callees --name X` lists calls written inside X's definition body. Multiple definition sites are refused; unmatched declarations remain resolver candidates but do not block reading one unique implementation.
 
-There is no `--depth`: cx does not do multi-hop traversal, and does no type resolution, so overload resolution, virtual dispatch and template instantiation are out of scope by design.
+For multi-hop reverse-call questions, use the separate bounded `cx impact` command. It preserves shortest supported and possible witness paths, exact site identities, unresolved frontiers, and independent depth/node/edge budgets. It still does no type resolution, overload resolution, virtual dispatch or template instantiation. `cx changes` compares raw tracked old/new Git or working bytes and can compose before/after impact. `cx context` retrieves lexical task evidence and bounded original excerpts. See [`docs/TASK_ANALYSIS.md`](docs/TASK_ANALYSIS.md) for contracts and limitations.
 
 `cx references` rows also carry `evidence` (`definition`, `declaration`, `call`, `type_reference`, `import`, `identifier_reference`) and `resolution: syntax`.
 

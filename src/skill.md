@@ -16,6 +16,9 @@ Commands:
   references [OPTIONS] --name <NAME>    Find all usages of a symbol across the project
   callers [OPTIONS] --name <NAME>       Direct call sites pointing at a symbol, with resolution level
   callees [OPTIONS] --name <NAME>       Direct calls written inside a symbol's body
+  impact [OPTIONS] --name <NAME>        Bounded multi-hop reverse calls with supported/possible witnesses
+  changes [OPTIONS]                    Tracked old/new Git/working symbols, optional before/after impact
+  context [OPTIONS] --query <TEXT>      Lexical task retrieval with source-backed excerpts
   refresh [PATHS]...                    Re-index the named files now, by content hash
   lang [OPTIONS] <SUBCOMMAND>           Manage language grammars (sub-commands: add, remove, list, help)
   help [COMMAND]                        Full command/option list or help on the given subcommand(s)
@@ -31,11 +34,10 @@ Pagination options:
       --all              Return all results (bypass default limit)
 ```
 
-Prefer cx over reading files. Zoom in until you have what you need, then stop:
-`map` (whole repo) > `overview` > `symbols` > `definition` or `references`.
-
-Fall back to the Read tool when `cx` can't represent the target (anonymous functions, JSX-inline components, dynamic
-dispatch, string-keyed lookups, non-symbol regions).
+Prefer the cheapest command that answers the question. For a known body use `definition`; for one-hop use
+`callers`/`callees`; for an explicit multi-hop reverse-call question use `impact`. Use `changes` for Git
+old/new evidence, and `context` only when task words are known but symbols/files are not. More metadata is not
+automatically better. Fall back to Read when cx cannot represent the target (anonymous/dynamic/non-symbol regions).
 
 ## First-run checks (once per session)
 
@@ -76,6 +78,9 @@ cx references --name NAME [--file PATH] [--context]  find usages, `--context` wi
 cx callers --name NAME [--scope GLOB]                who calls it, with `resolution` per edge
 cx callees --name NAME [--scope GLOB]                what it calls (needs --scope if the name is ambiguous)
 cx refresh PATH...                                   re-index the named files now, by content hash
+cx impact --name NAME [--scope GLOB] [--file PATH] [--line N] [--max-depth N]   multi-hop reverse impact
+cx changes [--staged | --base REF --head REF [--merge-base]] [--impact]         old/new changed symbols
+cx context --query TEXT [--include-body] [--byte-budget N]                     task evidence and original excerpts
 ```
 
 - `--file` and `--from` are identical and restrict the symbol to a precise file, but only if there is an exact match for
@@ -107,10 +112,11 @@ cx refresh PATH...                                   re-index the named files no
   and lists their qualified names. Narrow with `--scope` (or `--from`) instead of assuming the first row is the one you
   want. A declaration plus its definition is one symbol, so it produces no such warning.
 - `cx references --name X` groups hits by file; add `--context` only when exact source lines are needed.
-- For call relationships use `cx callers` / `cx callees`, and **read the `resolution` column**: `syntax` means cx only
-  knows the identifier sits in a callee position, so an empty `to` with `ambiguous_candidates` means "could be any of
-  these", not "no caller". `lexical_scope` and `import_resolved` are resolved edges. cx does no type resolution, so
-  method calls through a variable (`obj.run()`) usually stay `syntax`. There is no multi-hop traversal.
+- For one-hop call relationships use `cx callers` / `cx callees`, and **read the `resolution` column**. An empty
+  `to` with candidates means unknown, not no caller. Use `cx impact` only for an explicit multi-hop reverse-call
+  question; keep supported vs possible paths and unresolved frontiers separate. Traversal stop reasons make depth
+  an upper bound, not proof of no shorter omitted path. cx still does no type/runtime resolution.
+  `cx changes` never runs tests and does not prove safety. `cx context` text hits are not call evidence.
 - When re-entering an unfamiliar area or picking up a topic after a gap, use `cx overview` / `cx definition` to
   re-orient — don't re-read full files
 - Check signatures for `pub`/`export` to identify public API without reading the file.
@@ -119,7 +125,7 @@ cx refresh PATH...                                   re-index the named files no
 
 ## Pagination
 
-Default limits: overview: unlimited, definition 3, symbols 100, references 50.
+Default limits: overview unlimited, definition 3, symbols 100, references/relations/impact/changes 50, context 10.
 
 When truncated, stderr shows: `cx: 3/32 definitions for "X"`. Use `--file` (or `--from`), `--kind` and `--role` to narrow, or use
 `--offset` to get further pages, or `--all` to get all results.

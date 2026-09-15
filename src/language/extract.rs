@@ -1,4 +1,5 @@
 use crate::index::{Symbol, SymbolKind, SymbolRole};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator};
 
@@ -66,6 +67,7 @@ pub(super) fn classify_reference(node: Node, source: &[u8]) -> RefEvidence {
 /// "Syntactic" is the whole claim: the AST says this identifier sits in the
 /// callee position of a call node.  It says nothing about which declaration the
 /// call resolves to.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CallSite {
     /// Bare name in the callee position (`run` in `alpha::run()`).
     pub name: String,
@@ -74,6 +76,12 @@ pub struct CallSite {
     pub qualifier: Option<String>,
     pub line: usize,
     pub byte_offset: usize,
+    pub byte_end: usize,
+    /// Nearest AST execution container; anonymous containers are not their host.
+    pub owner_range: Option<(usize, usize)>,
+    pub anonymous_owner: bool,
+    /// Receiver calls, macros and constructors require semantics not modelled here.
+    pub indirect: bool,
 }
 
 /// Call node kinds and the field naming their callee, per language.
@@ -105,50 +113,184 @@ fn call_model(lang: &str) -> Option<CallModel> {
     }
 }
 
-/// Rightmost identifier leaf of a callee expression, plus the text written
-/// before it.
-///
-/// `alpha::run` → (`run`, Some("alpha")); `runner.run` → (`run`, Some("runner"));
-/// `run` → (`run`, None).
-fn split_callee(node: Node, source: &[u8]) -> Option<(String, Option<String>)> {
-    let mut cursor = node;
-    loop {
-        // Named children only: punctuation like `::` or `.` is not a name.
-        let last_named = (0..cursor.named_child_count())
-            .filter_map(|i| cursor.named_child(i as u32))
-            .next_back();
-        match last_named {
-            Some(child) if child.child_count() > 0 || cursor.kind() != child.kind() => {
-                if cursor.child_count() == 0 {
+pub(super) fn supports_calls(lang: &str) -> bool {
+    call_model(lang).is_some()
+}
+
+fn execution_owner(node: Node<'_>) -> Option<Node<'_>> {
+    let mut parent = node.parent();
+    while let Some(node) = parent {
+        if matches!(
+            node.kind(),
+            "function_item"
+                | "function_definition"
+                | "closure_expression"
+                | "lambda_expression"
+                | "function_declaration"
+                | "function_expression"
+                | "generator_function_declaration"
+                | "generator_function"
+                | "arrow_function"
+                | "method_definition"
+        ) {
+            return Some(node);
+        }
+        parent = node.parent();
+    }
+    None
+}
+
+/// Follow grammar fields that identify a callee, never its last descendant
+/// (which may be a template type argument or an argument to a computed call).
+struct CalleeHead {
+    name: String,
+    qualifier: Option<String>,
+    receiver: bool,
+}
+
+fn split_callee(node: Node, source: &[u8]) -> Option<CalleeHead> {
+    match node.kind() {
+        "identifier" | "field_identifier" | "property_identifier" | "type_identifier" => {
+            Some(CalleeHead {
+                name: node.utf8_text(source).ok()?.to_string(),
+                qualifier: None,
+                receiver: false,
+            })
+        }
+        "generic_function" => split_callee(node.child_by_field_name("function")?, source),
+        "template_function" | "template_method" | "template_type" => {
+            split_callee(node.child_by_field_name("name")?, source)
+        }
+        "qualified_identifier" | "scoped_identifier" => {
+            let mut head = split_callee(node.child_by_field_name("name")?, source)?;
+            let scope = node
+                .child_by_field_name("scope")
+                .or_else(|| node.child_by_field_name("path"));
+            let prefix = scope
+                .map(|s| s.utf8_text(source))
+                .transpose()
+                .ok()?
+                .unwrap_or("");
+            head.qualifier = Some(match head.qualifier {
+                Some(tail) => format!("{prefix}::{tail}"),
+                None if prefix.is_empty() => "::".to_string(),
+                None => prefix.to_string(),
+            });
+            if node.utf8_text(source).ok()?.starts_with("::")
+                && let Some(qualifier) = &mut head.qualifier
+                && !qualifier.starts_with("::")
+            {
+                qualifier.insert_str(0, "::");
+            }
+            Some(head)
+        }
+        "field_expression" | "member_expression" => {
+            let field = node
+                .child_by_field_name("field")
+                .or_else(|| node.child_by_field_name("property"))?;
+            let mut head = split_callee(field, source)?;
+            let receiver = node
+                .child_by_field_name("argument")
+                .or_else(|| node.child_by_field_name("value"))
+                .or_else(|| node.child_by_field_name("object"))?;
+            head.qualifier = Some(receiver.utf8_text(source).ok()?.to_string());
+            head.receiver = true;
+            Some(head)
+        }
+        "parenthesized_expression" if node.named_child_count() == 1 => {
+            split_callee(node.named_child(0)?, source)
+        }
+        // Computed callees have no lexical target here. Their children are still
+        // walked, so factory(value)() keeps factory's call, not a fake value().
+        _ => None,
+    }
+}
+
+fn is_builtin_cast(lang: &str, node: Node, source: &[u8]) -> bool {
+    if !matches!(lang, "c" | "cpp") {
+        return false;
+    }
+    match node.kind() {
+        "primitive_type" | "sized_type_specifier" => true,
+        "template_function" => node.child_by_field_name("name").is_some_and(|name| {
+            matches!(
+                name.utf8_text(source).ok(),
+                Some("static_cast" | "reinterpret_cast" | "const_cast" | "dynamic_cast")
+            )
+        }),
+        "parenthesized_expression" if node.named_child_count() == 1 => node
+            .named_child(0)
+            .is_some_and(|child| is_builtin_cast(lang, child, source)),
+        _ => false,
+    }
+}
+
+pub(super) struct CallExtraction {
+    pub sites: Vec<CallSite>,
+    pub unsupported_calls: usize,
+}
+
+/// Conservative binding blockers, not a symbol binder. A matching local or
+/// imported identifier prevents a same-name function from becoming a definite
+/// target. Ranges keep unrelated function parameters from poisoning the file.
+fn binding_blockers(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<(String, (usize, usize))> {
+    let mut blockers = Vec::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        let field = match node.kind() {
+            "parameter" | "let_declaration" | "required_parameter" | "optional_parameter" => {
+                Some("pattern")
+            }
+            "parameter_declaration" | "init_declarator" => Some("declarator"),
+            "variable_declarator" => Some("name"),
+            _ => None,
+        };
+        let import = matches!(node.kind(), "import_statement" | "use_declaration");
+        if let Some(binding) = field
+            .and_then(|field| node.child_by_field_name(field))
+            .or_else(|| import.then_some(node))
+        {
+            let mut scope = node.parent();
+            while let Some(parent) = scope {
+                if matches!(
+                    parent.kind(),
+                    "block"
+                        | "statement_block"
+                        | "compound_statement"
+                        | "function_item"
+                        | "function_definition"
+                        | "function_declaration"
+                        | "method_definition"
+                        | "arrow_function"
+                        | "closure_expression"
+                ) {
                     break;
                 }
-                cursor = child;
+                scope = parent.parent();
             }
-            _ => break,
+            let scope = scope.unwrap_or_else(|| tree.root_node());
+            let mut names = vec![binding];
+            while let Some(name) = names.pop() {
+                if name.kind() == "identifier" {
+                    if let Ok(text) = name.utf8_text(source) {
+                        blockers.push((text.to_string(), (scope.start_byte(), scope.end_byte())));
+                    }
+                } else {
+                    for i in 0..name.named_child_count() {
+                        if let Some(child) = name.named_child(i as u32) {
+                            names.push(child);
+                        }
+                    }
+                }
+            }
         }
-        if cursor.child_count() == 0 {
-            break;
+        for i in 0..node.named_child_count() {
+            if let Some(child) = node.named_child(i as u32) {
+                stack.push(child);
+            }
         }
     }
-
-    let name = cursor.utf8_text(source).ok()?.to_string();
-    if name.is_empty() || name.contains(['(', ')', ' ', '\n']) {
-        return None;
-    }
-
-    // Whatever preceded the final name inside the callee expression.
-    let whole = node.utf8_text(source).ok()?;
-    let qualifier = whole
-        .strip_suffix(&name)
-        .map(|prefix| {
-            prefix
-                .trim_end_matches([':', '.', '>', '-'])
-                .trim()
-                .to_string()
-        })
-        .filter(|q| !q.is_empty());
-
-    Some((name, qualifier))
+    blockers
 }
 
 /// Collect every syntactic call site in a parsed file.
@@ -160,24 +302,71 @@ pub(super) fn find_call_sites(
     lang: &str,
     tree: &tree_sitter::Tree,
     source: &[u8],
-) -> Vec<CallSite> {
+) -> CallExtraction {
     let Some(model) = call_model(lang) else {
-        return Vec::new();
+        return CallExtraction {
+            sites: Vec::new(),
+            unsupported_calls: 0,
+        };
     };
 
+    let mut blockers: std::collections::HashMap<String, Vec<(usize, usize)>> =
+        std::collections::HashMap::new();
+    for (name, range) in binding_blockers(tree, source) {
+        blockers.entry(name).or_default().push(range);
+    }
+    let mut unsupported_calls = 0;
     let mut sites = Vec::new();
     let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
         if let Some((_, field)) = model.nodes.iter().find(|(kind, _)| *kind == node.kind())
+            && !node.has_error()
             && let Some(callee) = node.child_by_field_name(field)
-            && let Some((name, qualifier)) = split_callee(callee, source)
+            && !is_builtin_cast(lang, callee, source)
         {
-            sites.push(CallSite {
+            if let Some(CalleeHead {
                 name,
                 qualifier,
-                line: callee.start_position().row + 1,
-                byte_offset: callee.start_byte(),
-            });
+                receiver,
+            }) = split_callee(callee, source)
+            {
+                let owner = execution_owner(node);
+                let conflicts = |binding: &str| {
+                    blockers.get(binding).is_some_and(|ranges| {
+                        ranges.iter().any(|(start, end)| {
+                            *start <= callee.start_byte() && callee.start_byte() < *end
+                        })
+                    })
+                };
+                let blocked = conflicts(&name)
+                    || qualifier
+                        .as_deref()
+                        .and_then(|q| q.split("::").next())
+                        .is_some_and(conflicts);
+                sites.push(CallSite {
+                    name,
+                    qualifier,
+                    line: callee.start_position().row + 1,
+                    byte_offset: callee.start_byte(),
+                    byte_end: callee.end_byte(),
+                    owner_range: owner.map(|n| (n.start_byte(), n.end_byte())),
+                    anonymous_owner: owner.is_some_and(|n| {
+                        matches!(
+                            n.kind(),
+                            "closure_expression"
+                                | "lambda_expression"
+                                | "arrow_function"
+                                | "function_expression"
+                                | "generator_function"
+                        )
+                    }),
+                    indirect: matches!(node.kind(), "macro_invocation" | "new_expression")
+                        || receiver
+                        || blocked,
+                });
+            } else {
+                unsupported_calls += 1;
+            }
         }
         for i in (0..node.child_count()).rev() {
             if let Some(child) = node.child(i as u32) {
@@ -185,7 +374,10 @@ pub(super) fn find_call_sites(
             }
         }
     }
-    sites
+    CallExtraction {
+        sites,
+        unsupported_calls,
+    }
 }
 
 // --- Test detection ---
@@ -627,6 +819,16 @@ fn build_signature(config: &LanguageConfig, node: Node, source: &[u8]) -> String
         if !sig.is_empty() {
             return sig;
         }
+    }
+
+    // Declarations have no body delimiter; retain the complete prototype so
+    // cached relation facts can associate multiline declaration/definition sites.
+    if text.iter().rev().find(|b| !b.is_ascii_whitespace()) == Some(&b';') {
+        return String::from_utf8_lossy(text)
+            .trim()
+            .trim_end_matches(';')
+            .trim()
+            .to_string();
     }
 
     // Fallback: first line, strip trailing delimiters

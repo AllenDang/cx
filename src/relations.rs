@@ -10,14 +10,11 @@
 //! neither narrows it to one candidate the edge keeps `to` empty and lists the
 //! candidates instead of picking one.
 
-use std::collections::{BTreeSet, HashMap};
-use std::fs;
-use std::path::{Path, PathBuf};
-
 use serde::Serialize;
 
 use crate::index::{Index, Symbol, SymbolRole};
-use crate::map::{ImportIndex, Resolved};
+use crate::language::CallSite;
+use crate::relation_index::{RelationIndex, candidate_labels, display_path, label_of};
 
 /// What kind of fact an edge rests on (roadmap §5.4).
 ///
@@ -108,318 +105,105 @@ pub struct EdgeRow {
     pub ambiguous_candidates: String,
 }
 
-/// A definition that a call might refer to.
-struct Candidate<'a> {
-    path: &'a PathBuf,
-    symbol: &'a Symbol,
-    language: &'a str,
-}
-
-impl Candidate<'_> {
-    fn label(&self) -> String {
-        self.symbol
-            .qualified_name
-            .clone()
-            .unwrap_or_else(|| self.symbol.name.clone())
-    }
-}
-
-/// Collect the definitions a name could refer to.
-///
-/// Declarations are included only when no definition exists, so a C++ prototype
-/// never competes with its own implementation.
-fn candidates_for<'a>(index: &'a Index, name: &str) -> Vec<Candidate<'a>> {
-    let mut definitions = Vec::new();
-    let mut declarations = Vec::new();
-    for (path, data) in &index.entries {
-        for symbol in &data.symbols {
-            if symbol.name != name {
-                continue;
-            }
-            let candidate = Candidate {
-                path,
-                symbol,
-                language: data.meta.language.as_str(),
-            };
-            match symbol.role {
-                SymbolRole::Definition => definitions.push(candidate),
-                SymbolRole::Declaration => declarations.push(candidate),
-                _ => {}
-            }
-        }
-    }
-    if definitions.is_empty() {
-        declarations
-    } else {
-        definitions
-    }
-}
-
-/// Distinct logical targets among candidates, by qualified label.
-fn distinct_labels(candidates: &[Candidate<'_>]) -> Vec<String> {
-    let mut labels: Vec<String> = candidates.iter().map(Candidate::label).collect();
-    labels.sort();
-    labels.dedup();
-    labels
-}
-
-/// Outcome of trying to point one call site at one definition.
-struct Resolution {
-    to: Option<String>,
-    level: ResolutionLevel,
-    ambiguous: Vec<String>,
-}
-
-/// Narrow a call site to a single target, recording how far it got.
-///
-/// Candidates are always restricted to the caller's language first: a C++ call
-/// cannot refer to a TypeScript method, and allowing that is precisely the
-/// cross-scope false edge §11 forbids.
-fn resolve_call(
-    index: &Index,
-    imports: &ImportIndex,
-    call_file: &Path,
-    call_language: &str,
-    caller_scope: &[String],
-    qualifier: Option<&str>,
-    candidates: &[Candidate<'_>],
-) -> Resolution {
-    let same_language: Vec<&Candidate<'_>> = candidates
-        .iter()
-        .filter(|c| c.language == call_language)
-        .collect();
-
-    if same_language.is_empty() {
-        return Resolution {
-            to: None,
-            level: ResolutionLevel::Syntax,
-            ambiguous: Vec::new(),
-        };
-    }
-
-    let labels_of = |set: &[&Candidate<'_>]| -> Vec<String> {
-        let mut labels: Vec<String> = set.iter().map(|c| c.label()).collect();
-        labels.sort();
-        labels.dedup();
-        labels
-    };
-
-    // HTML script blocks have separate module/classic execution contexts. The
-    // file-level index does not model browser bindings, so retain candidates
-    // without claiming lexical or import resolution (even for a unique name).
-    if call_language == "html" {
-        return Resolution {
-            to: None,
-            level: ResolutionLevel::Syntax,
-            ambiguous: labels_of(&same_language),
-        };
-    }
-
-    // A qualifier written at the call site is the strongest lexical evidence
-    // available: `alpha::run()` names its scope explicitly.
-    if let Some(qualifier) = qualifier {
-        let matching: Vec<&Candidate<'_>> = same_language
-            .iter()
-            .filter(|c| {
-                c.symbol.qualified_name.as_deref().is_some_and(|q| {
-                    q.contains(&format!("{qualifier}::")) || q.contains(&format!("{qualifier}."))
-                })
-            })
-            .copied()
-            .collect();
-        let labels = labels_of(&matching);
-        if labels.len() == 1 {
-            return Resolution {
-                to: Some(labels[0].clone()),
-                level: ResolutionLevel::LexicalScope,
-                ambiguous: Vec::new(),
-            };
-        }
-    }
-
-    // Import evidence: the calling file resolves an import to the file defining
-    // exactly one candidate.  The lookup is prebuilt by the caller, so this no
-    // longer rescans the corpus once per call site.
-    if let Some(data) = index.entries.get(call_file) {
-        let mut imported_files: BTreeSet<PathBuf> = BTreeSet::new();
-        for import in &data.imports {
-            if let Resolved::File(target) = imports.resolve(call_file, import, &data.meta.language)
-            {
-                imported_files.insert(target);
-            }
-        }
-        let via_import: Vec<&Candidate<'_>> = same_language
-            .iter()
-            .filter(|c| imported_files.contains(c.path))
-            .copied()
-            .collect();
-        let labels = labels_of(&via_import);
-        if labels.len() == 1 {
-            return Resolution {
-                to: Some(labels[0].clone()),
-                level: ResolutionLevel::ImportResolved,
-                ambiguous: Vec::new(),
-            };
-        }
-    }
-
-    // Lexical nesting: a candidate is visible when its scope encloses the call.
-    let visible: Vec<&Candidate<'_>> = same_language
-        .iter()
-        .filter(|c| {
-            let scope = &c.symbol.scope_path;
-            scope.len() <= caller_scope.len() && caller_scope.starts_with(scope.as_slice())
-        })
-        .copied()
-        .collect();
-    let visible_labels = labels_of(&visible);
-    if visible_labels.len() == 1 {
-        return Resolution {
-            to: Some(visible_labels[0].clone()),
-            level: ResolutionLevel::LexicalScope,
-            ambiguous: Vec::new(),
-        };
-    }
-
-    // Nothing narrowed it. A single project-wide candidate is still a fact worth
-    // reporting, but only as syntax evidence: uniqueness is not scope reasoning.
-    let all_labels = labels_of(&same_language);
-    if all_labels.len() == 1 {
-        return Resolution {
-            to: Some(all_labels[0].clone()),
-            level: ResolutionLevel::Syntax,
-            ambiguous: Vec::new(),
-        };
-    }
-
-    Resolution {
-        to: None,
-        level: ResolutionLevel::Syntax,
-        ambiguous: all_labels,
-    }
-}
-
-/// Symbol enclosing a byte offset: the tightest range wins.
-fn enclosing_symbol(symbols: &[Symbol], offset: usize) -> Option<&Symbol> {
-    symbols
-        .iter()
-        .filter(|s| s.byte_range.0 <= offset && offset < s.byte_range.1)
-        .min_by_key(|s| s.byte_range.1 - s.byte_range.0)
-}
-
-fn display_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
-fn label_of(symbol: &Symbol) -> String {
-    symbol
-        .qualified_name
-        .clone()
-        .unwrap_or_else(|| symbol.name.clone())
-}
-
-/// Result of a relation query.
+/// Result of a one-hop projection. Coverage travels through the existing
+/// warnings array so the JSON v1 envelope and legacy edge fields stay intact.
 pub struct RelationReport {
     pub rows: Vec<EdgeRow>,
     pub warnings: Vec<String>,
 }
 
-/// Direct callers of `name`: one hop, syntax-level call evidence upward.
-pub fn callers(index: &Index, name: &str, scope_glob: Option<&str>) -> RelationReport {
-    let candidates = candidates_for(index, name);
-    let target_labels = distinct_labels(&candidates);
-    let mut rows = Vec::new();
-    let mut warnings = Vec::new();
+/// Calls belong to the nearest execution container, not every symbol whose
+/// byte range contains them. Anonymous closures have no named function owner.
+pub(crate) fn owner<'a>(symbols: &'a [Symbol], site: &CallSite) -> Option<&'a Symbol> {
+    if site.anonymous_owner {
+        return None;
+    }
+    let symbol = enclosing_symbol(symbols, site.byte_offset)?;
+    let (start, end) = site.owner_range?;
+    (symbol.kind == crate::index::SymbolKind::Fn
+        && symbol.byte_range.0 <= start
+        && symbol.byte_range.1 >= end)
+        .then_some(symbol)
+}
 
-    // Built once per query over the whole index, which is exactly the resolution
-    // set the previous `index.entries.keys()` scan used.
-    let imports = ImportIndex::build(index.entries.keys());
-
-    let mut files: Vec<(&PathBuf, &crate::index::FileData)> = index.entries.iter().collect();
-    files.sort_by_key(|(path, _)| *path);
-
-    for (path, data) in files {
-        let abs = index.root.join(path);
-        let Ok(source) = fs::read(&abs) else { continue };
-        if memchr::memmem::find(&source, name.as_bytes()).is_none() {
-            continue;
-        }
-        let Ok(sites) = crate::language::find_calls(&data.meta.language, &source, &abs) else {
-            continue;
+fn project_edge(
+    analysis: &RelationIndex<'_>,
+    index: &Index,
+    path: &std::path::Path,
+    site: &CallSite,
+    scope: Option<&str>,
+) -> Option<EdgeRow> {
+    let data = &index.entries[path];
+    let caller = owner(&data.symbols, site);
+    let resolution = analysis.resolve(path, &data.meta.language, caller, site);
+    if let Some(pattern) = scope {
+        let matches = |candidate: &crate::relation_index::Candidate<'_>| {
+            candidate
+                .symbol
+                .qualified_name
+                .as_deref()
+                .is_some_and(|q| crate::util::glob::glob_match(pattern, q))
         };
-
-        for site in sites.iter().filter(|s| s.name == name) {
-            let caller = enclosing_symbol(&data.symbols, site.byte_offset);
-            let caller_scope: Vec<String> = caller
-                .map(|c| {
-                    // A call inside `fn f` in `mod a` is lexically inside `a`,
-                    // and inside `f` itself for nested items.
-                    let mut scope = c.scope_path.clone();
-                    scope.push(c.name.clone());
-                    scope
-                })
-                .unwrap_or_default();
-
-            let resolution = resolve_call(
-                index,
-                &imports,
-                path,
-                &data.meta.language,
-                &caller_scope,
-                site.qualifier.as_deref(),
-                &candidates,
-            );
-
-            if let Some(pattern) = scope_glob {
-                let matches_target = resolution
-                    .to
-                    .as_deref()
-                    .is_some_and(|t| crate::util::glob::glob_match(pattern, t));
-                if !matches_target {
-                    continue;
-                }
-            }
-
-            rows.push(EdgeRow {
-                from: caller
-                    .map(label_of)
-                    .unwrap_or_else(|| "(file scope)".to_string()),
-                to: resolution.to.clone().unwrap_or_default(),
-                evidence: EvidenceKind::Call.as_str().to_string(),
-                resolution: resolution.level.as_str().to_string(),
-                file: display_path(path),
-                line: site.line,
-                ambiguous_candidates: resolution.ambiguous.join(", "),
-            });
+        if !resolution.to.is_some_and(matches) && !resolution.candidates.iter().any(|c| matches(c))
+        {
+            return None;
         }
     }
+    Some(EdgeRow {
+        from: caller.map(label_of).unwrap_or_else(|| {
+            site.owner_range.map_or_else(
+                || "(file scope)".to_string(),
+                |(start, _)| format!("(anonymous scope@{start})"),
+            )
+        }),
+        to: resolution.to.map_or_else(String::new, |c| c.label()),
+        evidence: EvidenceKind::Call.as_str().to_string(),
+        resolution: resolution.level.as_str().to_string(),
+        file: display_path(path),
+        line: site.line,
+        ambiguous_candidates: candidate_labels(&resolution.candidates).join(", "),
+    })
+}
 
-    if target_labels.len() > 1 {
+/// Direct callers, using the shared command-local snapshot and candidate table.
+pub fn callers(index: &Index, name: &str, scope_glob: Option<&str>) -> RelationReport {
+    let analysis = RelationIndex::for_callers(index, name);
+    let mut warnings = vec![analysis.warning()];
+    let targets: Vec<_> = analysis.named(name).iter().collect();
+    if targets.len() > 1 {
         warnings.push(format!(
             "{} distinct symbols named \"{name}\": {}. Edges with an empty target could not be narrowed to one.",
-            target_labels.len(),
-            target_labels.join(", ")
-        ));
+            targets.len(), candidate_labels(&targets).join(", ")));
     }
-    let unresolved = rows.iter().filter(|r| r.to.is_empty()).count();
-    if unresolved > 0 {
+    let mut rows = Vec::new();
+    for (path, sites) in &analysis.calls {
+        for site in sites.iter().filter(|site| site.name == name) {
+            if let Some(row) = project_edge(&analysis, index, path, site, scope_glob) {
+                rows.push(row);
+            }
+        }
+    }
+    let uncertain = rows.iter().filter(|r| r.to.is_empty()).count();
+    if scope_glob.is_some() && uncertain > 0 {
+        warnings.push(format!("relation_scope: {uncertain} unresolved call sites retained by matching candidates; targets remain unknown and candidate sets are not narrowed"));
+    }
+    let syntax = rows.iter().filter(|r| r.resolution == "syntax").count();
+    if syntax > 0 {
         warnings.push(format!(
-            "{unresolved} of {} call sites are syntax evidence only; cx does not resolve types",
+            "{syntax} of {} call sites are syntax evidence only; cx does not resolve types",
             rows.len()
         ));
     }
-
     RelationReport { rows, warnings }
 }
 
-/// Direct callees of `name`: calls written inside its body, one hop.
+/// Direct callees. Distinct definition sites (including identical display names)
+/// must not be silently unioned into a single subject.
 pub fn callees(index: &Index, name: &str, scope_glob: Option<&str>) -> RelationReport {
-    let mut warnings = Vec::new();
-
-    // Pick the definition whose body to read.
-    let mut hosts: Vec<&Candidate<'_>> = Vec::new();
-    let candidates = candidates_for(index, name);
-    let filtered: Vec<&Candidate<'_>> = candidates
+    let analysis = RelationIndex::for_callees(index, name, scope_glob);
+    let mut warnings = vec![analysis.warning()];
+    let matching: Vec<_> = analysis
+        .named(name)
         .iter()
         .filter(|c| {
             scope_glob.is_none_or(|pattern| {
@@ -430,82 +214,52 @@ pub fn callees(index: &Index, name: &str, scope_glob: Option<&str>) -> RelationR
             })
         })
         .collect();
-    hosts.extend(filtered);
-
-    let labels: Vec<String> = {
-        let mut labels: Vec<String> = hosts.iter().map(|c| c.label()).collect();
-        labels.sort();
-        labels.dedup();
-        labels
+    // Reading a definition body is not proof that an unmatched declaration is
+    // the same entity. Keep all sites for target resolution, but select bodies
+    // by definition role, just as the definition command does.
+    let definitions: Vec<_> = matching
+        .iter()
+        .copied()
+        .filter(|c| c.symbol.role == SymbolRole::Definition)
+        .collect();
+    let declarations = matching
+        .iter()
+        .filter(|c| c.symbol.role == SymbolRole::Declaration)
+        .count();
+    if !definitions.is_empty() && declarations > 0 {
+        warnings.push(format!("relation_subject: {declarations} declaration sites not merged; selecting definition bodies only, without claiming declaration equivalence"));
+    }
+    let hosts = if definitions.is_empty() {
+        matching
+    } else {
+        definitions
     };
-
-    if labels.len() > 1 {
-        // Reading one arbitrary body would silently answer a different question.
+    if hosts.len() > 1 {
         warnings.push(format!(
-            "{} distinct symbols named \"{name}\": {}. Narrow with --scope to choose one.",
-            labels.len(),
-            labels.join(", ")
-        ));
+            "{} distinct symbols named \"{name}\": {}. Narrow with --scope to choose one. Equal qualified names at different sites cannot be selected by this legacy interface.",
+            hosts.len(), candidate_labels(&hosts).join(", ")));
         return RelationReport {
             rows: Vec::new(),
             warnings,
         };
     }
-
     let mut rows = Vec::new();
-    let mut all_candidates_cache: HashMap<String, Vec<Candidate<'_>>> = HashMap::new();
-    // Built once per query, not once per call site.
-    let imports = ImportIndex::build(index.entries.keys());
-
-    for host in &hosts {
-        let abs = index.root.join(host.path);
-        let Ok(source) = fs::read(&abs) else { continue };
-        let Some(data) = index.entries.get(host.path) else {
-            continue;
-        };
-        let Ok(sites) = crate::language::find_calls(&data.meta.language, &source, &abs) else {
-            continue;
-        };
-
-        let (start, end) = host.symbol.byte_range;
-        let mut host_scope = host.symbol.scope_path.clone();
-        host_scope.push(host.symbol.name.clone());
-
-        for site in sites
-            .iter()
-            .filter(|s| s.byte_offset >= start && s.byte_offset < end)
-        {
-            let callee_candidates = all_candidates_cache
-                .entry(site.name.clone())
-                .or_insert_with(|| candidates_for(index, &site.name));
-
-            let resolution = resolve_call(
-                index,
-                &imports,
-                host.path,
-                &data.meta.language,
-                &host_scope,
-                site.qualifier.as_deref(),
-                callee_candidates,
-            );
-
-            rows.push(EdgeRow {
-                from: label_of(host.symbol),
-                to: resolution.to.clone().unwrap_or_default(),
-                evidence: EvidenceKind::Call.as_str().to_string(),
-                resolution: resolution.level.as_str().to_string(),
-                file: display_path(host.path),
-                line: site.line,
-                ambiguous_candidates: resolution.ambiguous.join(", "),
-            });
+    if let Some(host) = hosts.first() {
+        if host.symbol.role == SymbolRole::Declaration {
+            warnings.push("relation_subject: declaration_only; no function body analyzed".into());
+        } else if let Some(sites) = analysis.calls.get(&host.id.file) {
+            let data = &index.entries[&host.id.file];
+            for site in sites {
+                if owner(&data.symbols, site).is_some_and(|s| s.byte_range == host.id.range)
+                    && let Some(row) = project_edge(&analysis, index, &host.id.file, site, None)
+                {
+                    rows.push(row);
+                }
+            }
         }
+    } else {
+        warnings.push("relation_subject: not_found".into());
     }
-
-    rows.sort_by(|a, b| a.line.cmp(&b.line).then(a.to.cmp(&b.to)));
-    rows.dedup_by(|a, b| {
-        a.line == b.line && a.to == b.to && a.ambiguous_candidates == b.ambiguous_candidates
-    });
-
     let unresolved = rows.iter().filter(|r| r.to.is_empty()).count();
     if unresolved > 0 {
         warnings.push(format!(
@@ -513,8 +267,15 @@ pub fn callees(index: &Index, name: &str, scope_glob: Option<&str>) -> RelationR
             rows.len()
         ));
     }
-
     RelationReport { rows, warnings }
+}
+
+/// Symbol enclosing a byte offset: the tightest range wins.
+fn enclosing_symbol(symbols: &[Symbol], offset: usize) -> Option<&Symbol> {
+    symbols
+        .iter()
+        .filter(|s| s.byte_range.0 <= offset && offset < s.byte_range.1)
+        .min_by_key(|s| s.byte_range.1 - s.byte_range.0)
 }
 
 #[cfg(test)]

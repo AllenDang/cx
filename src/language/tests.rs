@@ -1465,7 +1465,9 @@ fn cpp_prototype_is_declaration_and_body_is_definition() {
     assert_eq!(
         roles,
         vec![
-            (SymbolRole::Declaration, "void validate(int v);"),
+            // Declaration signatures are normalized without the trailing `;`
+            // so persisted facts can associate them with matching definitions.
+            (SymbolRole::Declaration, "void validate(int v)"),
             (SymbolRole::Definition, "void validate(int v)"),
         ],
         "{syms:#?}"

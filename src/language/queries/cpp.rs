@@ -19,6 +19,14 @@ pub const QUERY: &str = r"
     declarator: (qualified_identifier
       name: (identifier) @name))) @definition.method
 
+; References wrap the function declarator too (both T& and T&&).
+(function_definition
+  declarator: (reference_declarator
+    (function_declarator
+      declarator: [(identifier) @name
+                   (field_identifier) @name
+                   (qualified_identifier name: (identifier) @name)]))) @definition.function
+
 ; --- Destructors ---
 
 (function_definition
@@ -45,6 +53,13 @@ pub const QUERY: &str = r"
       declarator: (qualified_identifier
         name: (identifier) @name)))) @definition.method
 
+(template_declaration
+  (function_definition
+    declarator: (reference_declarator
+      (function_declarator
+        declarator: [(identifier) @name
+                     (qualified_identifier name: (identifier) @name)])))) @definition.function
+
 ; --- Function declarations / prototypes (signature only, no body) ---
 
 (declaration
@@ -68,6 +83,18 @@ pub const QUERY: &str = r"
 (field_declaration
   declarator: (function_declarator
     declarator: (field_identifier) @name)) @declaration.method
+
+(declaration
+  declarator: (reference_declarator
+    (function_declarator
+      declarator: [(identifier) @name
+                   (field_identifier) @name
+                   (qualified_identifier name: (identifier) @name)]))) @declaration.function
+
+(field_declaration
+  declarator: (reference_declarator
+    (function_declarator
+      declarator: [(identifier) @name (field_identifier) @name]))) @declaration.method
 
 ; --- Classes & structs ---
 ; A bodyless `class Foo;` / `struct Foo;` is a forward declaration.  The

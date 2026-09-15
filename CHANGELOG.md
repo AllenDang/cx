@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-15
+
+### Added
+
+- `cx impact` and `cx_impact`: bounded multi-hop reverse-call analysis with exact site identity, supported/possible shortest witness paths, unresolved frontiers, source snapshots, and independent depth/node/edge/output limits.
+- `cx changes` and `cx_changes`: safe tracked working tree, staged, commit, and merge-base comparisons with old/new hunks and symbols, non-source classifications, move evidence, and optional before/after impact.
+- `cx context` and `cx_context`: deterministic exact-name/path/subword and source-text retrieval with comment/string provenance, original bounded excerpts, explicit filtering, and no popularity filler.
+- Content-bound task fact sidecar with file-local string dictionaries, compact call locations, zstd compression, lazy construction, generation/hash validation, and cache-clean integration.
+- Typed Pi schemas and native manifest-verified CLI-equivalence coverage for all three task tools.
+
+### Changed
+
+- Package and Pi extension version is 0.8.0; index format version 16 rebuilds older symbol facts and supports task-fact invalidation.
+- Task commands default to compact JSON evidence and offer `--detail full`; Pi defaults impact/context to verified freshness.
+- C/C++ call extraction follows grammar callee fields, excludes language casts, preserves template/turbofish heads, and indexes reference-return declarations/definitions.
+- Relation analysis separates definition-body selection from declaration equivalence, preserves scoped unresolved frontiers, prioritizes actionable coverage failures, and rejects stale source/index mixtures.
+
+### Validation
+
+- 443 Rust tests, 42 Pi tests, and 31 directed mutation controls pass.
+- On the frozen combined ANGE pilot, optimized task workflows kept 4/4 evidence sufficiency while reducing calls 71.4%, request/stdout bytes 17.5%, measured cl100k communication tokens 23.2%, and warm wall time 54.2% versus the strong mechanical baseline.
+
 ## [0.7.10] - 2026-09-11
 
 ### Added
