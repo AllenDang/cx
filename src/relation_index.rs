@@ -13,6 +13,7 @@ use crate::relations::ResolutionLevel;
 /// Exact site within this index content version, not a cross-version entity ID.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct DefinitionSiteId {
+    #[serde(serialize_with = "crate::output::serialize_path")]
     pub file: PathBuf,
     pub language: String,
     pub range: (usize, usize),

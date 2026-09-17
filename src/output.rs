@@ -3,6 +3,9 @@ use toon_format::encode_default;
 
 use crate::index::Freshness;
 
+mod path;
+pub(crate) use path::{ProtocolPath, serialize_optional_path, serialize_path};
+
 /// Version of the JSON envelope contract (roadmap §6.1).
 ///
 /// Bumped only for a breaking change to the key set or the meaning of a field.

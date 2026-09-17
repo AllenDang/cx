@@ -19,10 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-indexable dirty files no longer poison subsequent Pi queries. Native `unsupported_file_type` rows are acknowledged separately in `dirtyRefresh.unsupportedPaths`, without claiming index coverage; unsafe and unverified statuses still fail closed.
 - `cx lang add` now uses load-verified grammar prefetch instead of the upstream API that could report known-but-absent grammars as installed.
 - CI now prepares native Pi test assets and explicitly exposes installed grammars to Rust tests. Successful version tags invoke the reusable release workflow instead of relying on a `GITHUB_TOKEN` tag push to trigger another workflow.
+- Task-level JSON/TOON paths now use forward slashes on Windows in compact/full results and nested evidence, without changing internal path identities. Git fixture line endings and unusual filenames are explicitly platform-safe.
 
 ### Validation
 
-- Clean-cache local build: 443 Rust tests, 55 Pi tests, rustfmt, clippy, TypeScript checks and native package verification passed before publishing.
+- Clean-cache local build: 447 Rust tests, 55 Pi tests, rustfmt, clippy, TypeScript checks and native package verification passed before publishing.
 
 ## [0.8.0] - 2026-09-15
 

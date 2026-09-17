@@ -37,6 +37,7 @@ struct Body {
 }
 #[derive(Serialize)]
 pub struct Row {
+    #[serde(serialize_with = "crate::output::serialize_path")]
     pub file: PathBuf,
     pub name: String,
     qualified: Option<String>,
@@ -483,7 +484,7 @@ pub fn compact(report: Report<Row>) -> Report<serde_json::Value> {
     let rows=report.rows.into_iter().map(|row| {
         let matches=row.matches.into_iter().take(2).map(|m|json!({"field":m.field,"terms":m.terms,"line":m.line,
             "byte_range":m.byte_range})).collect::<Vec<_>>();
-        json!({"file":row.file,"name":row.name,"qualified":row.qualified,"kind":row.kind,"role":row.role,"line":row.line,
+        json!({"file":crate::output::ProtocolPath(&row.file),"name":row.name,"qualified":row.qualified,"kind":row.kind,"role":row.role,"line":row.line,
             "byte_range":row.byte_range,"score":row.score,"matched_terms":row.matched_terms,"matches":matches,
             "matches_total":row.matches_total,"matches_omitted":row.matches_omitted,"source_hash":row.source_hash,
             "body":row.body,"body_omitted_for_filter":row.body_omitted_for_filter,"next_queries":row.next_queries})

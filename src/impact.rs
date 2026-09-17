@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct NodeId {
+    #[serde(serialize_with = "crate::output::serialize_path")]
     pub file: PathBuf,
     pub language: String,
     pub range: (usize, usize),
@@ -43,6 +44,7 @@ pub struct Edge {
     pub caller_name: String,
     pub callee: NodeId,
     pub callee_name: String,
+    #[serde(serialize_with = "crate::output::serialize_path")]
     pub file: PathBuf,
     pub line: usize,
     pub byte_range: (usize, usize),
@@ -65,6 +67,7 @@ pub struct Row {
 #[derive(Clone, Serialize)]
 struct Frontier {
     caller: Node,
+    #[serde(serialize_with = "crate::output::serialize_path")]
     file: PathBuf,
     line: usize,
     byte_range: (usize, usize),
@@ -600,7 +603,7 @@ pub fn compact(report: Report<Row>) -> Report<serde_json::Value> {
         let (evidence,witness) = if let Some(supported)=row.supported.as_ref(){("supported",Some(supported))}
             else if let Some(possible)=row.possible.as_ref(){("possible",Some(possible))}else{("none",None)};
         let path=witness.map(|w|w.path.iter().map(|e|json!({"caller":e.caller_name,"callee":e.callee_name,
-            "file":e.file,"line":e.line,"resolution":e.resolution,"possible_reason":e.possible_reason})).collect::<Vec<_>>()).unwrap_or_default();
+            "file":crate::output::ProtocolPath(&e.file),"line":e.line,"resolution":e.resolution,"possible_reason":e.possible_reason})).collect::<Vec<_>>()).unwrap_or_default();
         json!({"symbol":row.symbol,"depth":row.depth,"depth_exact":row.depth_exact,"evidence":evidence,
             "also_possible":row.possible.is_some()&&row.supported.is_some(),"witness":path})
     }).collect();

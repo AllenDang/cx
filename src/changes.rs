@@ -494,6 +494,7 @@ struct Entity {
     qualified: Option<String>,
     kind: String,
     role: String,
+    #[serde(serialize_with = "crate::output::serialize_path")]
     file: PathBuf,
     byte_range: (usize, usize),
     line: usize,
@@ -539,8 +540,11 @@ struct EntityChange {
 }
 #[derive(Serialize)]
 pub struct Row {
+    #[serde(serialize_with = "crate::output::serialize_path")]
     file: PathBuf,
+    #[serde(serialize_with = "crate::output::serialize_optional_path")]
     before_file: Option<PathBuf>,
+    #[serde(serialize_with = "crate::output::serialize_optional_path")]
     after_file: Option<PathBuf>,
     change: &'static str,
     classification: &'static str,
