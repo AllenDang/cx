@@ -103,6 +103,92 @@ test("the next query refreshes dirty paths once and reports generation metadata"
   assert.deepEqual(dirty.pendingPaths(root), []);
 });
 
+function withUnsupportedRows(command: string, generation: number, paths: string[] = []): CxRunResult {
+  const output = result(command, generation, paths);
+  if (command === "refresh") {
+    for (const row of output.envelope.results as Array<{ file: string; status: string }>) {
+      if (row.file.endsWith(".json")) row.status = "unsupported_file_type";
+    }
+    output.raw = JSON.stringify(output.envelope);
+  }
+  return output;
+}
+
+test("unsupported dirty files do not poison subsequent source queries", async () => {
+  const { root, a } = await fixture();
+  const config = join(root, "settings.json"); await writeFile(config, "{}\n");
+  const dirty = new DirtyPathCoordinator(); dirty.activate(root); dirty.markDirty(payload(root, [a, config]));
+  const calls: string[] = [];
+  const h = harness(dirty, async (options) => {
+    calls.push(options.command);
+    return withUnsupportedRows(options.command, 7, options.args);
+  });
+  const output = await h.tools.get("cx_overview").execute("query", {}, undefined, undefined, h.ctx(root));
+  assert.deepEqual(calls, ["refresh", "overview"]);
+  assert.deepEqual(dirty.pendingPaths(root), []);
+  assert.deepEqual(output.details.dirtyRefresh, { requested: 2, refreshed: 1, generation: 7, unsupportedPaths: ["settings.json"] });
+  await h.tools.get("cx_overview").execute("again", {}, undefined, undefined, h.ctx(root));
+  assert.deepEqual(calls, ["refresh", "overview", "overview"]);
+});
+
+test("unsupported-only dirty refresh reports zero indexed paths", async () => {
+  for (const [name, params] of [["cx_overview", {}], ["cx_refresh", { paths: [] }]] as const) {
+    const { root } = await fixture();
+    const config = join(root, "settings.json"); await writeFile(config, "{}\n");
+    const dirty = new DirtyPathCoordinator(); dirty.activate(root); dirty.markDirty(payload(root, [config]));
+    const h = harness(dirty, async (options) => withUnsupportedRows(options.command, 8, options.args));
+    const output = await h.tools.get(name).execute("query", params, undefined, undefined, h.ctx(root));
+    assert.deepEqual(output.details.dirtyRefresh, { requested: 1, refreshed: 0, generation: 8, unsupportedPaths: ["settings.json"] });
+    assert.deepEqual(dirty.pendingPaths(root), []);
+  }
+});
+
+test("explicit refresh counts only unsupported paths from the pending set", async () => {
+  const { root, a } = await fixture();
+  for (const name of ["one.json", "two.json"]) await writeFile(join(root, name), "{}\n");
+  const dirty = new DirtyPathCoordinator(); dirty.activate(root); dirty.markDirty(payload(root, [a]));
+  const h = harness(dirty, async (options) => withUnsupportedRows(options.command, 9, options.args));
+  const output = await h.tools.get("cx_refresh").execute("refresh", { paths: ["one.json", "two.json"] }, undefined, undefined, h.ctx(root));
+  assert.deepEqual(output.details.dirtyRefresh, { requested: 1, refreshed: 1, generation: 9 });
+  assert.deepEqual(dirty.pendingPaths(root), []);
+});
+
+test("unsupported paths never excuse failed or unverified source refreshes", async () => {
+  for (const failure of ["outside_root", "read_failed", "unverified", "future_unknown_status"]) {
+    const { root, a } = await fixture();
+    const config = join(root, "settings.json"); await writeFile(config, "{}\n");
+    const dirty = new DirtyPathCoordinator(); dirty.activate(root); dirty.markDirty(payload(root, [a, config]));
+    const calls: string[] = [];
+    const h = harness(dirty, async (options) => {
+      calls.push(options.command);
+      const output = withUnsupportedRows(options.command, 10, options.args);
+      if (options.command === "refresh") (output.envelope.results as Array<{ file: string; status: string }>).find(row => row.file === "src/a.ts")!.status = failure;
+      return output;
+    });
+    await assert.rejects(() => h.tools.get("cx_overview").execute("query", {}, undefined, undefined, h.ctx(root)), /dirty-path refresh failed/);
+    assert.deepEqual(calls, ["refresh"]);
+    assert.deepEqual(dirty.pendingPaths(root).sort(), ["settings.json", "src/a.ts"]);
+  }
+});
+
+test("bundled binary can navigate after an unsupported JSON edit", async (t) => {
+  try { await access(BINARY_PATH); } catch { return t.skip("bundled asset not installed"); }
+  const { root } = await fixture();
+  await writeFile(join(root, "src", "a.ts"), "export function a() { return 1; }\n");
+  const config = join(root, "settings.json"); await writeFile(config, "{}\n");
+  const dirty = new DirtyPathCoordinator();
+  const tools = new Map<string, any>();
+  registerCxTools({ registerTool(tool: any) { tools.set(tool.name, tool); } } as any, dirty);
+  const ctx = { cwd: root, hasUI: false, ui: {} };
+  await tools.get("cx_symbols").execute("initial", { name: "a" }, undefined, undefined, ctx);
+  dirty.markDirty(payload(root, [config]));
+  const output = await tools.get("cx_definition").execute("after-json", { name: "a", from: "src/a.ts" }, undefined, undefined, ctx);
+  assert.equal(output.details.resultCount, 1);
+  assert.deepEqual(output.details.dirtyRefresh.unsupportedPaths, ["settings.json"]);
+  assert.equal(output.details.dirtyRefresh.refreshed, 0);
+  assert.deepEqual(dirty.pendingPaths(root), []);
+});
+
 test("failed automatic refresh preserves pending paths and suppresses the query", async () => {
   const { root, a } = await fixture();
   const dirty = new DirtyPathCoordinator(); dirty.activate(root); dirty.markDirty(payload(root, [a]));

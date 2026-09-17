@@ -1,0 +1,12 @@
+{
+  "examples": {
+    "metadataPreset": "compact",
+    "kind": "few-shot-system-guidance",
+    "text": "<local_source_navigation_examples>\nThe cx tools query the CURRENT WORKING DIRECTORY: the same local source files as read/grep. No repository argument or manual index setup is needed. For code edits, these are recommended navigation patterns (examples, not commands to copy literally):\n\nExample task: fix Parser.parse error handling.\n1. Call cx_symbols with {\"name\":\"Parser\"} to locate the class.\n2. Call cx_definition with {\"name\":\"parse\",\"from\":\"<file returned by the lookup>\"} to read the implementation.\n3. Edit the actual source and run tests.\n\nExample task: adjust timeout handling when the file is unknown.\n1. Call cx_context with {\"query\":\"timeout\",\"includeBody\":true}.\n2. Read a relevant implementation with cx_definition using a name/file from the results.\n3. Use read to fill any omitted source; edit and test.\n\nUse names from the real task, not Parser/parse/timeout unless relevant. These tools return original source and locations, not generated summaries. If lookup is empty or cannot answer the question, grep/find/read are valid fallbacks. For documentation, configuration, raw-text searches, commands and tests, use the ordinary tools directly. Extra calls and repeated refreshes are not a goal.\n</local_source_navigation_examples>"
+  },
+  "tail-priority": {
+    "metadataPreset": "priority",
+    "kind": "explicit-system-tail-policy-not-natural-adoption",
+    "text": "<source_navigation_policy>\n源码导航规则（工具侧指引，不改变用户任务）：cx 查询的是当前工作目录中的同一份源码，不是其他项目。进行源码修改时，在用 bash/grep/find/read 搜索实现之前，先用 cx_symbols 定位任务中提到的函数或类，再用 cx_definition 读取需要修改的实现；若任务没有符号名，则以 cx_context 和实际代码关键词定位入口。使用真实工具调用，不要只在文字里描述打算调用。\n例如要修改某个类的方法：cx_symbols 的 name 使用该类名；cx_definition 的 name 使用方法短名称，from 使用查到的文件。不要复制不存在的示例符号。若查询没有有效命中、结果不足或发生错误，立即用 grep/find/read 补充，不要重复无效查询。\n本规则仅适用于需要定位源码实现的任务。文档、配置、原始文本修改，运行命令和测试，或已经读过所需源码的情况，直接使用基础工具。不要为了调用次数而调用 cx，也不需要在每次编辑或测试前刷新索引。\n</source_navigation_policy>"
+  }
+}

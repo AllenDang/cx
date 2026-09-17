@@ -1,0 +1,17 @@
+[
+  {
+    "id": "discard",
+    "repository": "cachetools",
+    "prompt": "为 Cache 及其缓存子类增加 discard(key) 方法：存在且成功删除时返回 True，键不存在时返回 False；不读取该键的值、不调用 __missing__。删除要经过子类现有的删除逻辑，确保容量记账和淘汰顺序数据结构仍一致。不要改变 pop/get 的行为。添加回归测试，覆盖基础 Cache、FIFO、LFU、LRU、RR，以及缺失键和删除后的后续插入/淘汰。"
+  },
+  {
+    "id": "reset-stats",
+    "repository": "cachetools",
+    "prompt": "为 cached(..., info=True) 生成的包装函数增加 cache_reset_stats()：仅把 hits 和 misses 归零，不清除缓存内容，不调用原函数，返回 None。传入 lock 时计数重置必须在锁内；cache=None 也应支持。cachetools.func 的便捷装饰器应自动获得该能力。info=False 时 cache_reset_stats 属性设为 None。保留 cache_clear 的现有行为并添加测试。"
+  },
+  {
+    "id": "receiver-count",
+    "repository": "blinker",
+    "prompt": "为 Signal 添加只读 receiver_count 属性，返回当前注册的不同接收器数量，不区分发送者。同一接收器绑定多个 sender 或同时绑定 ANY 时只计一次；disconnect 后数量更新；弱引用接收器被回收后不计数。读取属性不能调用接收器，也不能触发 receiver_connected/receiver_disconnected 通知。NamedSignal 应继承此能力。添加覆盖重复连接、多发送者、断开、弱引用回收和只读属性的回归测试。"
+  }
+]

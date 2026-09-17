@@ -125,9 +125,9 @@ export function buildContextArgs(p: Static<typeof schemas.context>): string[] {
 }
 
 const guidance: Record<string, string> = {
-  cx_overview: "Use cx_overview before reading a whole source file when only its structure is needed.",
-  cx_symbols: "Use cx_symbols for identifier-oriented discovery; name is a glob (use *Material* for related names), and scope matches the complete qualified name (use ANGE::* or ANGE::MaterialRegistry::*). Use grep for raw strings, logs, SQL, routes, and generated text.",
-  cx_definition: "Use cx_definition to read one implementation before falling back to a full-file read; scope matches the complete qualified name, so member lookups need patterns such as ANGE::MaterialRegistry::* or an exact qualified name.",
+  cx_overview: "For source navigation, prefer cx_overview to a directory listing when you need code structure, and cx_definition when you need an implementation. Use read for complete text/config files.",
+  cx_symbols: "Source-edit navigation policy: when the task names a code symbol, make the first source lookup with cx_symbols, then read the needed implementation with cx_definition. For unknown symbols use cx_context. This rule is for locating code, not for shell setup, tests, literal-text/config/prose edits, or files already inspected. If indexed lookup returns no useful match or cannot cover the needed text, fall back to grep/find/read immediately. No repeated calls or minimum call count are required.",
+  cx_definition: "Use cx_definition for a known function/class before reading a whole source file. Pass the lexical name, plus from or scope if ambiguous. If the body is missing or truncated, use read for the remaining source. Keep read/grep for tasks that need raw text rather than code structure.",
   cx_references: "Use cx_references for syntax-classified occurrences and pass a lexical identifier such as load, never a qualified name; use cx_callers/cx_callees with scope for qualified call evidence. Do not treat unresolved edges as resolved.",
   cx_callers: "Use cx_callers/cx_callees for one-hop call evidence; do not treat unresolved edges as resolved.",
   cx_callees: "Use cx_callers/cx_callees for one-hop call evidence; do not treat unresolved edges as resolved.",
@@ -135,7 +135,7 @@ const guidance: Record<string, string> = {
   cx_refresh: "Use cx_refresh after edits when the next decision requires proof that the current index generation includes those paths.",
   cx_impact: "Use cx_impact for multi-hop reverse call questions, not routine body reads. Select one root with file/scope/site; preserve supported versus possible paths and unresolved frontiers. Unknown totals and traversal limits are not a safety verdict; snapshot guards output pagination.",
   cx_changes: "Use cx_changes for tracked Git changes with old/new symbol evidence. Default compares raw working bytes to HEAD; staged and commit modes are explicit. Optional impact has separate before/after snapshots. It never executes project tests or proves behavioral safety.",
-  cx_context: "Use cx_context when task words are known but the relevant symbols/files are not. It retrieves lexical evidence and bounded original text, not semantic confidence. Prefer cx_definition for a known body; preserve missing evidence and budget disclosures.",
+  cx_context: "For source edits whose location is unknown, begin source discovery with cx_context using likely code identifiers or English keywords; if the task already names the symbol use cx_symbols instead. Follow useful matches with cx_definition. Use grep/find/read when no useful match is available. Skip this workflow for pure documentation/configuration tasks; do not call tools merely to satisfy a quota.",
 };
 
 function renderCall(name: string) { return (rawArgs: unknown, theme: any) => { const args = (rawArgs && typeof rawArgs === "object" ? rawArgs : {}) as Record<string, unknown>; return new Text(theme.fg("toolTitle", theme.bold(`${name} `)) + theme.fg("muted", Object.entries(args).slice(0, 2).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" ")), 0, 0); }; }
@@ -187,7 +187,7 @@ export function registerCxTools(pi: ExtensionAPI, dirty = new DirtyPathCoordinat
       };
 
       const pending = dirty.takePending(root);
-      let dirtyRefresh: { requested: number; refreshed: number; generation?: number } | undefined;
+      let dirtyRefresh: ReturnType<typeof refreshDetails> | undefined;
       let result: CxRunResult;
       if (command === "refresh") {
         const refreshArgs = args.length === 0 ? [] : [...new Set([...args, ...pending])];
@@ -195,14 +195,14 @@ export function registerCxTools(pi: ExtensionAPI, dirty = new DirtyPathCoordinat
           result = await invoke("refresh", refreshArgs);
           if (refreshArgs.length > 0) {
             assertNamedRefresh(refreshArgs, result);
-            if (pending.length > 0) dirtyRefresh = refreshDetails(pending.length, result);
+            if (pending.length > 0) dirtyRefresh = refreshDetails(pending, result);
           } else if (pending.length > 0) {
             // A full-project refresh reports only changed files, so it cannot
             // prove that every dirty snapshot path was actually readable.
             // Follow it with a named proof before consuming pending paths.
             const proof = await invoke("refresh", pending);
             assertNamedRefresh(pending, proof);
-            dirtyRefresh = refreshDetails(pending.length, proof);
+            dirtyRefresh = refreshDetails(pending, proof);
           }
         } catch (error) {
           dirty.restorePending(root, pending);
@@ -213,7 +213,7 @@ export function registerCxTools(pi: ExtensionAPI, dirty = new DirtyPathCoordinat
           try {
             const refresh = await invoke("refresh", pending);
             assertNamedRefresh(pending, refresh);
-            dirtyRefresh = refreshDetails(pending.length, refresh);
+            dirtyRefresh = refreshDetails(pending, refresh);
           } catch (error) {
             dirty.restorePending(root, pending);
             const message = error instanceof Error ? error.message : String(error);
@@ -246,9 +246,9 @@ export function registerCxTools(pi: ExtensionAPI, dirty = new DirtyPathCoordinat
       return execute(root, name.slice(3), await builder(root, params), signal, ctx);
     },
   });
-  add("cx_overview", "cx overview", "Show one directory level or a source file outline. Output is bounded to 50KB/2000 lines.", schemas.overview, buildOverviewArgs, "Inspect a directory or file structure without reading full source");
-  add("cx_symbols", "cx symbols", "Search repository symbols by typed filters. name is a glob (for example *Material*); scope is matched against the complete qualified name (for example ANGE::MaterialRegistry::*). Requires a filter or kinds=true.", schemas.symbols, buildSymbolsArgs, "Search identifiers and symbol metadata across the project");
-  add("cx_definition", "cx definition", "Read a symbol implementation body; defaults to role=definition. scope must match the complete qualified name, using ::* when selecting members of a parent scope.", schemas.definition, buildDefinitionArgs, "Read one symbol body instead of a whole file");
+  add("cx_overview", "cx overview", "List a directory or outline the functions/classes in a source file, with source locations. Use path (default '.'); output is bounded to 50KB/2000 lines. Read a known implementation with cx_definition instead of scanning the whole file.", schemas.overview, buildOverviewArgs, "List source structure before choosing what to read");
+  add("cx_symbols", "cx symbols", "Find the function, class or method you need to edit. Search code definitions by name, without knowing a filename. Example: name='*Cache*'. Returns names, paths, scopes and locations. Exact names are exact matches; use * for discovery. Requires a filter or kinds=true. Scope matches the complete qualified name; copy a returned scope to disambiguate.", schemas.symbols, buildSymbolsArgs, "Source-edit entry point: locate the named function/class");
+  add("cx_definition", "cx definition", "Read actual source code for a function, class or method by name. No filename is required; use from or a returned scope to disambiguate. Returns bounded original source, not a generated summary. Defaults to role=definition. Scope matches complete qualified names; Parent::* selects members.", schemas.definition, buildDefinitionArgs, "Read the implementation to edit, directly by symbol name");
   add("cx_references", "cx references", "Find syntax-classified occurrences by lexical identifier. Qualified names are rejected; use cx_callers/cx_callees with scope for qualified call evidence. This is not compiler type resolution.", schemas.references, buildReferencesArgs, "Find syntax-classified references to a symbol");
   add("cx_callers", "cx callers", "Find one-hop callers, preserving unresolved targets and candidates.", schemas.callers, (_r, p) => buildRelationArgs(p), "Find direct callers with resolution evidence");
   add("cx_callees", "cx callees", "Find one-hop callees; ambiguous symbols are not guessed and no multi-hop depth is available.", schemas.callees, (_r, p) => buildRelationArgs(p), "Find direct callees with resolution evidence");
@@ -256,7 +256,7 @@ export function registerCxTools(pi: ExtensionAPI, dirty = new DirtyPathCoordinat
   add("cx_refresh", "cx refresh", "Explicitly refresh changed paths, or verify the whole project when paths is empty.", schemas.refresh, buildRefreshArgs, "Refresh the cx index after edits when generation proof is needed");
   add("cx_impact", "cx impact", "Analyze bounded multi-hop reverse call impact for one exact function site. Returns shortest supported/possible witnesses, unresolved frontiers, coverage and independent traversal/output limits; not compiler or runtime proof.", schemas.impact, buildImpactArgs, "Trace multi-hop impact with source witnesses and uncertainty");
   add("cx_changes", "cx changes", "Compare tracked Git/working snapshots, preserving old/new symbols and file-level/non-source changes. Optional impact is evaluated separately before and after. Does not run project commands or tests.", schemas.changes, (_r, p) => buildChangesArgs(p), "Locate changes on both sides and optionally analyze their impact");
-  add("cx_context", "cx context", "Find task-relevant source by exact names, paths, subwords and body/comment/string evidence. Bounded original excerpts and byte-aware pagination; no popularity filler or semantic-search guarantee.", schemas.context, (_r, p) => buildContextArgs(p), "Retrieve a bounded, source-backed task context");
+  add("cx_context", "cx context", "Find where to implement a change from short task keywords when the file and symbol are unknown. Returns ranked source locations and bounded original excerpts; includeBody=true adds bodies. Use likely code identifiers or English terms. Lexical matching, not semantic search; results and pagination are byte-bounded.", schemas.context, (_r, p) => buildContextArgs(p), "Source-edit entry point when the symbol or file is unknown");
 }
 
 function assertNamedRefresh(paths: string[], result: CxRunResult): void {
@@ -265,7 +265,9 @@ function assertNamedRefresh(paths: string[], result: CxRunResult): void {
   for (const row of result.envelope.results) {
     if (!row || typeof row !== "object") throw new Error("cx refresh returned a malformed result row");
     const { file, status } = row as { file?: unknown; status?: unknown };
-    if (typeof file !== "string" || typeof status !== "string" || !["updated", "removed", "unchanged", "not_indexed"].includes(status)) {
+    // The native scanner securely checked this path but cannot index its type.
+    // Consume it without claiming source-index coverage; other failures stay fatal.
+    if (typeof file !== "string" || typeof status !== "string" || !["updated", "removed", "unchanged", "not_indexed", "unsupported_file_type"].includes(status)) {
       throw new Error("cx refresh returned a malformed path status");
     }
     if (!expected.has(file) || confirmed.has(file)) throw new Error(`cx refresh returned an unexpected path status: ${file}`);
@@ -277,11 +279,17 @@ function assertNamedRefresh(paths: string[], result: CxRunResult): void {
   }
 }
 
-function refreshDetails(requested: number, result: CxRunResult): { requested: number; refreshed: number; generation?: number } {
+function refreshDetails(pending: string[], result: CxRunResult): { requested: number; refreshed: number; generation?: number; unsupportedPaths?: string[] } {
   const generation = result.envelope.freshness?.generation;
+  const pendingPaths = new Set(pending.map((path) => path.replaceAll("\\", "/")));
+  // Explicit refreshes may also contain non-pending paths. Count only our queue.
+  const unsupportedPaths = (result.envelope.results as Array<{ file: string; status: string }>)
+    .filter((row) => row.status === "unsupported_file_type" && pendingPaths.has(row.file))
+    .map((row) => row.file);
   return {
-    requested,
-    refreshed: requested,
+    requested: pending.length,
+    refreshed: pending.length - unsupportedPaths.length,
     ...(typeof generation === "number" ? { generation } : {}),
+    ...(unsupportedPaths.length > 0 ? { unsupportedPaths } : {}),
   };
 }

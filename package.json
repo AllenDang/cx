@@ -1,6 +1,6 @@
 {
   "name": "pi-cx",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "type": "module",
   "keywords": ["pi-package", "code-navigation", "tree-sitter", "ai-agents"],

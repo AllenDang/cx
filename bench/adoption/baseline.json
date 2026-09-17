@@ -1,0 +1,624 @@
+[
+  {
+    "name": "cx_overview",
+    "description": "Show one directory level or a source file outline. Output is bounded to 50KB/2000 lines.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "default": "."
+        },
+        "full": {
+          "type": "boolean"
+        },
+        "noTests": {
+          "type": "boolean",
+          "description": "Exclude test files and test symbols"
+        },
+        "fresh": {
+          "type": "string",
+          "enum": [
+            "metadata",
+            "verified"
+          ],
+          "description": "Index freshness verification mode (default metadata)"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "promptSnippet": "Inspect a directory or file structure without reading full source",
+    "promptGuidelines": [
+      "Use cx_overview before reading a whole source file when only its structure is needed."
+    ]
+  },
+  {
+    "name": "cx_symbols",
+    "description": "Search repository symbols by typed filters. name is a glob (for example *Material*); scope is matched against the complete qualified name (for example ANGE::MaterialRegistry::*). Requires a filter or kinds=true.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Symbol-name glob. Use *Material* for related-name discovery; Material is an exact match."
+        },
+        "file": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "fn",
+            "struct",
+            "enum",
+            "trait",
+            "type",
+            "const",
+            "class",
+            "interface",
+            "module",
+            "event",
+            "field",
+            "heading"
+          ]
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "definition",
+            "declaration",
+            "heading",
+            "unknown"
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "description": "Glob matched against the complete qualified name. Use ANGE::*, ANGE::MaterialRegistry::*, or an exact name such as ANGE::MaterialRegistry::load; a parent without trailing ::* does not match members."
+        },
+        "kinds": {
+          "type": "boolean"
+        },
+        "noTests": {
+          "type": "boolean",
+          "description": "Exclude test files and test symbols"
+        },
+        "fresh": {
+          "type": "string",
+          "enum": [
+            "metadata",
+            "verified"
+          ],
+          "description": "Index freshness verification mode (default metadata)"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "promptSnippet": "Search identifiers and symbol metadata across the project",
+    "promptGuidelines": [
+      "Use cx_symbols for identifier-oriented discovery; name is a glob (use *Material* for related names), and scope matches the complete qualified name (use ANGE::* or ANGE::MaterialRegistry::*). Use grep for raw strings, logs, SQL, routes, and generated text."
+    ]
+  },
+  {
+    "name": "cx_definition",
+    "description": "Read a symbol implementation body; defaults to role=definition. scope must match the complete qualified name, using ::* when selecting members of a parent scope.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Lexical symbol name, not a qualified name"
+        },
+        "from": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "fn",
+            "struct",
+            "enum",
+            "trait",
+            "type",
+            "const",
+            "class",
+            "interface",
+            "module",
+            "event",
+            "field",
+            "heading"
+          ]
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "definition",
+            "declaration",
+            "heading",
+            "unknown"
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "description": "Glob matched against the complete qualified name. Use ANGE::*, ANGE::MaterialRegistry::*, or an exact name such as ANGE::MaterialRegistry::load; a parent without trailing ::* does not match members."
+        },
+        "maxLines": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "noTests": {
+          "type": "boolean",
+          "description": "Exclude test files and test symbols"
+        },
+        "fresh": {
+          "type": "string",
+          "enum": [
+            "metadata",
+            "verified"
+          ],
+          "description": "Index freshness verification mode (default metadata)"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "promptSnippet": "Read one symbol body instead of a whole file",
+    "promptGuidelines": [
+      "Use cx_definition to read one implementation before falling back to a full-file read; scope matches the complete qualified name, so member lookups need patterns such as ANGE::MaterialRegistry::* or an exact qualified name."
+    ]
+  },
+  {
+    "name": "cx_references",
+    "description": "Find syntax-classified occurrences by lexical identifier. Qualified names are rejected; use cx_callers/cx_callees with scope for qualified call evidence. This is not compiler type resolution.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Lexical identifier such as load; qualified names such as ANGE::MaterialRegistry::load are rejected. Use cx_callers/cx_callees with scope for qualified call evidence."
+        },
+        "file": {
+          "type": "string"
+        },
+        "context": {
+          "type": "boolean"
+        },
+        "noTests": {
+          "type": "boolean",
+          "description": "Exclude test files and test symbols"
+        },
+        "fresh": {
+          "type": "string",
+          "enum": [
+            "metadata",
+            "verified"
+          ],
+          "description": "Index freshness verification mode (default metadata)"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "promptSnippet": "Find syntax-classified references to a symbol",
+    "promptGuidelines": [
+      "Use cx_references for syntax-classified occurrences and pass a lexical identifier such as load, never a qualified name; use cx_callers/cx_callees with scope for qualified call evidence. Do not treat unresolved edges as resolved."
+    ]
+  },
+  {
+    "name": "cx_callers",
+    "description": "Find one-hop callers, preserving unresolved targets and candidates.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Lexical callee identifier"
+        },
+        "scope": {
+          "type": "string",
+          "description": "Glob matched against the complete qualified name. Use ANGE::*, ANGE::MaterialRegistry::*, or an exact name such as ANGE::MaterialRegistry::load; a parent without trailing ::* does not match members."
+        },
+        "noTests": {
+          "type": "boolean",
+          "description": "Exclude test files and test symbols"
+        },
+        "fresh": {
+          "type": "string",
+          "enum": [
+            "metadata",
+            "verified"
+          ],
+          "description": "Index freshness verification mode (default metadata)"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "promptSnippet": "Find direct callers with resolution evidence",
+    "promptGuidelines": [
+      "Use cx_callers/cx_callees for one-hop call evidence; do not treat unresolved edges as resolved."
+    ]
+  },
+  {
+    "name": "cx_callees",
+    "description": "Find one-hop callees; ambiguous symbols are not guessed and no multi-hop depth is available.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Lexical symbol identifier whose body should be examined"
+        },
+        "scope": {
+          "type": "string",
+          "description": "Glob matched against the complete qualified name. Use ANGE::*, ANGE::MaterialRegistry::*, or an exact name such as ANGE::MaterialRegistry::load; a parent without trailing ::* does not match members."
+        },
+        "noTests": {
+          "type": "boolean",
+          "description": "Exclude test files and test symbols"
+        },
+        "fresh": {
+          "type": "string",
+          "enum": [
+            "metadata",
+            "verified"
+          ],
+          "description": "Index freshness verification mode (default metadata)"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "promptSnippet": "Find direct callees with resolution evidence",
+    "promptGuidelines": [
+      "Use cx_callers/cx_callees for one-hop call evidence; do not treat unresolved edges as resolved."
+    ]
+  },
+  {
+    "name": "cx_map",
+    "description": "Create a bounded repository map preserving ranking and import warnings.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "depth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "includeVendor": {
+          "type": "boolean"
+        },
+        "includeGenerated": {
+          "type": "boolean"
+        },
+        "tests": {
+          "type": "boolean"
+        },
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        },
+        "fresh": {
+          "type": "string",
+          "enum": [
+            "metadata",
+            "verified"
+          ],
+          "description": "Index freshness verification mode (default metadata)"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "promptSnippet": "Orient within repository subsystems and import edges",
+    "promptGuidelines": [
+      "Use cx_map for bounded repository orientation, not as a runtime dependency graph."
+    ]
+  },
+  {
+    "name": "cx_refresh",
+    "description": "Explicitly refresh changed paths, or verify the whole project when paths is empty.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 200,
+          "default": []
+        }
+      }
+    },
+    "promptSnippet": "Refresh the cx index after edits when generation proof is needed",
+    "promptGuidelines": [
+      "Use cx_refresh after edits when the next decision requires proof that the current index generation includes those paths."
+    ]
+  },
+  {
+    "name": "cx_impact",
+    "description": "Analyze bounded multi-hop reverse call impact for one exact function site. Returns shortest supported/possible witnesses, unresolved frontiers, coverage and independent traversal/output limits; not compiler or runtime proof.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Lexical function name; use scope/file/site selectors to choose exactly one root"
+        },
+        "scope": {
+          "type": "string",
+          "description": "Glob matched against the complete qualified name. Use ANGE::*, ANGE::MaterialRegistry::*, or an exact name such as ANGE::MaterialRegistry::load; a parent without trailing ::* does not match members."
+        },
+        "file": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "byteOffset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxDepth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32
+        },
+        "maxNodes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "maxEdges": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "snapshot": {
+          "type": "string"
+        },
+        "byteBudget": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 32768
+        },
+        "detail": {
+          "type": "string",
+          "enum": [
+            "compact",
+            "full"
+          ],
+          "description": "compact (default) preserves primary evidence; full includes repeated raw paths/matches/hunks"
+        },
+        "noTests": {
+          "type": "boolean",
+          "description": "Exclude test files and test symbols"
+        },
+        "fresh": {
+          "type": "string",
+          "enum": [
+            "metadata",
+            "verified"
+          ],
+          "description": "Index freshness verification mode (default metadata)"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "promptSnippet": "Trace multi-hop impact with source witnesses and uncertainty",
+    "promptGuidelines": [
+      "Use cx_impact for multi-hop reverse call questions, not routine body reads. Select one root with file/scope/site; preserve supported versus possible paths and unresolved frontiers. Unknown totals and traversal limits are not a safety verdict; snapshot guards output pagination."
+    ]
+  },
+  {
+    "name": "cx_changes",
+    "description": "Compare tracked Git/working snapshots, preserving old/new symbols and file-level/non-source changes. Optional impact is evaluated separately before and after. Does not run project commands or tests.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "base": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        },
+        "staged": {
+          "type": "boolean"
+        },
+        "mergeBase": {
+          "type": "boolean"
+        },
+        "impact": {
+          "type": "boolean"
+        },
+        "maxDepth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32
+        },
+        "snapshot": {
+          "type": "string"
+        },
+        "byteBudget": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 32768
+        },
+        "detail": {
+          "type": "string",
+          "enum": [
+            "compact",
+            "full"
+          ],
+          "description": "compact (default) preserves primary evidence; full includes repeated raw paths/matches/hunks"
+        },
+        "noTests": {
+          "type": "boolean",
+          "description": "Exclude test files and test symbols"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "promptSnippet": "Locate changes on both sides and optionally analyze their impact",
+    "promptGuidelines": [
+      "Use cx_changes for tracked Git changes with old/new symbol evidence. Default compares raw working bytes to HEAD; staged and commit modes are explicit. Optional impact has separate before/after snapshots. It never executes project tests or proves behavioral safety."
+    ]
+  },
+  {
+    "name": "cx_context",
+    "description": "Find task-relevant source by exact names, paths, subwords and body/comment/string evidence. Bounded original excerpts and byte-aware pagination; no popularity filler or semantic-search guarantee.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Task words, identifier or path. Lexical retrieval, not semantic search"
+        },
+        "includeBody": {
+          "type": "boolean"
+        },
+        "includeVendor": {
+          "type": "boolean"
+        },
+        "includeGenerated": {
+          "type": "boolean"
+        },
+        "includeFixtures": {
+          "type": "boolean"
+        },
+        "snapshot": {
+          "type": "string"
+        },
+        "byteBudget": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 32768
+        },
+        "detail": {
+          "type": "string",
+          "enum": [
+            "compact",
+            "full"
+          ],
+          "description": "compact (default) preserves primary evidence; full includes repeated raw paths/matches/hunks"
+        },
+        "noTests": {
+          "type": "boolean",
+          "description": "Exclude test files and test symbols"
+        },
+        "fresh": {
+          "type": "string",
+          "enum": [
+            "metadata",
+            "verified"
+          ],
+          "description": "Index freshness verification mode (default metadata)"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "promptSnippet": "Retrieve a bounded, source-backed task context",
+    "promptGuidelines": [
+      "Use cx_context when task words are known but the relevant symbols/files are not. It retrieves lexical evidence and bounded original text, not semantic confidence. Prefer cx_definition for a known body; preserve missing evidence and budget disclosures."
+    ]
+  }
+]

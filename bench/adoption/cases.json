@@ -1,0 +1,21 @@
+{
+  "repository": "https://github.com/tkem/cachetools.git",
+  "ref": "v5.5.2",
+  "commit": "c403f9f4185e58090b904c1915345b9ba46d5a08",
+  "models": ["amazon-bedrock/global.openai.gpt-6-astra", "aliyun/kimi-k3", "aliyun/deepseek-v4.1-flash"],
+  "cases": [
+    {
+      "id": "negative-size",
+      "prompt": "修复缓存容量记账问题：当自定义 getsizeof(value) 返回负数时，写入应抛出 ValueError，并且不得改变已有内容、currsize 或淘汰任何元素。零大小仍合法，已有正数大小与 value too large 行为保持兼容。请在公共缓存写入路径解决，并为新键和覆盖旧键添加回归测试。"
+    },
+    {
+      "id": "invalidate",
+      "prompt": "给 cached 装饰的函数增加 cache_invalidate(*args, **kwargs) 方法：使用装饰器配置的 key 函数计算键，只删除该次调用对应的缓存项；删除成功返回 True，键不存在或 cache=None 返回 False。传入 lock 时，删除必须在锁内完成；不要调用被包装函数，不要重置或增加 hits/misses。info=True/False 均支持，cachetools.func 的各个便捷装饰器也应获得此能力。保留现有行为并添加回归测试。"
+    },
+    {
+      "id": "peek",
+      "prompt": "给 LRUCache 添加 peek(key, default=None)：返回已有值但不改变最近使用顺序；键不存在时返回 default，不调用 __missing__，也不插入。正常的 __getitem__ 和 get 仍应更新最近使用顺序。请添加测试验证 peek 后的淘汰顺序、缺失键、自定义 default 与存储 None 的情况。不要改变其他缓存策略。"
+    }
+  ],
+  "suffix": "只修改当前仓库的源码与测试，不提交、不推送、不读取或修改其他工作目录。运行 PYTHONPATH=src python3 -m pytest -q 验证。最终简要报告修改、测试结果和未解决问题；若环境阻塞则报告实际错误，不要自行换环境。"
+}

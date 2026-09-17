@@ -7,12 +7,18 @@ import { promisify } from "node:util";
 import test from "node:test";
 import piCx from "../../extensions/pi-cx/index.js";
 import { SUPPORTED_PLATFORMS, currentPlatformConfig, grammarFilename } from "../../extensions/pi-cx/platform.js";
+import { PACKAGE_VERSION } from "../../extensions/pi-cx/types.js";
 
 const exec = promisify(execFile);
 
 test("Cargo and Pi package versions match and vendor is ignored", async () => {
   const pkg = JSON.parse(await readFile("package.json", "utf8")); const cargo = await readFile("Cargo.toml", "utf8"); const ignore = await readFile(".gitignore", "utf8");
   assert.equal(pkg.version, cargo.match(/^version = "([^"]+)"/m)?.[1]); assert.match(pkg.pi.extensions[0], /extensions\/pi-cx\/index\.ts/); assert.match(ignore, /vendor\/pi-cx/);
+  assert.equal(pkg.version, PACKAGE_VERSION);
+  const lock = JSON.parse(await readFile("package-lock.json", "utf8"));
+  assert.equal(lock.version, pkg.version); assert.equal(lock.packages[""].version, pkg.version);
+  const cargoLock = await readFile("Cargo.lock", "utf8");
+  assert.equal(cargoLock.match(/name = "cx-cli"\nversion = "([^"]+)"/)?.[1], pkg.version);
 });
 test("platform matrix covers all release targets with native filenames", () => {
   assert.equal(SUPPORTED_PLATFORMS.length, 6);
@@ -62,5 +68,5 @@ test("extension factory uses only load-safe registration methods", () => {
   assert.deepEqual(tools.map(t => t.name), ["cx_overview", "cx_symbols", "cx_definition", "cx_references", "cx_callers", "cx_callees", "cx_map", "cx_refresh", "cx_impact", "cx_changes", "cx_context"]);
   assert.deepEqual(commands, ["cx-status"]); assert.ok(tools.every(t => !Object.hasOwn(t.parameters.properties, "root")));
   assert.deepEqual(eventChannels, ["cx:mark-dirty:v1"]);
-  assert.deepEqual(handlers, ["session_start", "session_shutdown"]);
+  assert.deepEqual(handlers, ["session_start", "session_shutdown", "before_agent_start"]);
 });

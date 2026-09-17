@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-pi install git:github.com/AllenDang/cx@v0.8.0
+pi install git:github.com/AllenDang/cx@v0.8.1
 ```
 
 The package supports macOS, Linux, and Windows on arm64 and x86_64. Installation selects the asset matching the current OS and architecture, verifies the archive and every manifest file, then installs it under a platform-specific `vendor/pi-cx/<platform>-<arch>` directory. Installation runs native code verification and requires network access. Review package source before installation.
@@ -28,6 +28,14 @@ The package supports macOS, Linux, and Windows on arm64 and x86_64. Installation
 
 Every query is rooted at the current Pi session's canonical `ctx.cwd`; tools do not accept a root argument. Path and symlink escapes are rejected. Results preserve cx's schema-v1 JSON envelope; task tools add structured `analysis`, and use `page.total: null` when analysis is partial. Task tools default to compact detail and verified freshness for impact/context; request `detail: "full"` for repeated raw paths/hunks/match text. cx evidence is syntax-oriented and does not claim compiler/runtime semantics, behavioral safety, or test sufficiency. See [`docs/TASK_ANALYSIS.md`](../../docs/TASK_ANALYSIS.md).
 
+## Source-navigation guidance
+
+When `cx_symbols`, `cx_definition`, and `cx_context` are all active, pi-cx appends a short tool-owned navigation policy to the system prompt. Source edits start with local symbol/body lookup (or task-keyword lookup when the location is unknown); empty results, errors, and missing text fall back to ordinary tools. Documentation/configuration-only tasks, commands and tests do not require cx. The extension does not rewrite user requests, disable other tools, synthesize tool results, or enforce a call quota. This is explicit workflow guidance, not model training.
+
+The policy and metadata are covered by a small multi-model editing study; see [the final confirmation report](../../bench/adoption/round4/RESULTS.md) for results, costs and limitations. Tool registration alone does not grant tools to child agents: pi-subagents profiles with strict allowlists must name the desired cx tools and load this extension. A parent session having cx does not mean its worker has cx.
+
+Source changes take effect only after Pi loads the updated extension. Reload a local checkout after updating it; a package pinned to an older Git tag must first be updated or explicitly replaced with the local checkout. Merely reloading a pinned release does not load uncommitted source changes.
+
 ## Cross-extension dirty paths
 
 File-mutating extensions can request a verified refresh before the next CX query without depending on pi-cx:
@@ -42,6 +50,8 @@ pi.events.emit("cx:mark-dirty:v1", {
 ```
 
 pi-cx accepts only valid paths inside the current canonical project root, rejects NUL, oversized payloads, excessive path depth, and symlink escapes, and deduplicates pending paths. Events are bounded to 200 paths before any filesystem canonicalization. Named CX reads use capability-scoped file handles beneath the canonical root, so path components cannot be swapped to escape between validation and read. Before the next query tool call (including impact/changes/context), it serializes a path refresh ahead of the query. A named refresh must return one valid status row per requested path, and index persistence must commit successfully; otherwise the paths stay pending and the potentially stale query does not run. `cx_refresh` merges explicit paths with pending paths; an empty explicit path list performs a full verified refresh followed by named proof of the pending snapshot. Dirty paths are session-local and are cleared at session shutdown.
+
+Non-indexable dirty files (for example JSON configuration) are acknowledged with the native `unsupported_file_type` status and do not block later source queries. They appear in `details.dirtyRefresh.unsupportedPaths` and are excluded from its `refreshed` count; this is not a claim that their contents were indexed. Unsafe, unreadable, unverified, missing-status and unexpected-path responses still fail closed and retain pending paths.
 
 ## Cache and grammars
 

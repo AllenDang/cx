@@ -44,7 +44,10 @@ pub fn add(languages: &[String]) -> i32 {
 
     eprintln!("cx: downloading grammars: {}", to_download.join(", "));
 
-    match tree_sitter_language_pack::download(&to_download) {
+    // In pack 1.16.1, download() treats known-but-absent grammars as available.
+    // prefetch() checks actual loadability, downloads missing files, and verifies
+    // that each requested grammar can be loaded before reporting success.
+    match tree_sitter_language_pack::prefetch(&to_download) {
         Ok(_) => {
             eprintln!("cx: installed {} grammar(s)", to_download.len());
             0

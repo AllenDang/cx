@@ -4,10 +4,25 @@ on:
   push:
     tags:
       - "v*"
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing version tag to publish
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to publish or retry
+        required: true
+        type: string
 
 permissions:
   contents: write
   id-token: write
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -29,6 +44,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check release tag matches package version
+        run: node -e "const p=require('./package.json'); if (process.env.RELEASE_TAG !== 'v'+p.version) throw new Error('tag/package version mismatch');"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -71,6 +93,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
       - uses: actions/download-artifact@v4
         with:
           name: cx-x86_64-unknown-linux-gnu
@@ -88,6 +112,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --ignore-scripts
+      - name: Install native test asset
+        run: node scripts/install-pi-cx.mjs
+        env:
+          PI_CX_ASSET_DIR: ${{ github.workspace }}/ci-native
       - run: npm run typecheck:pi
       - run: npm run test:pi
 
@@ -102,6 +130,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          tag_name: ${{ inputs.tag || github.ref_name }}
           files: |
             cx-*.tar.gz
             cx-*.zip

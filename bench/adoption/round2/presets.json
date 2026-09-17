@@ -1,0 +1,59 @@
+{
+  "compact": {
+    "kind": "recommended-routing",
+    "tools": {
+      "cx_overview": {
+        "description": "List a directory or outline the functions/classes in a source file, with source locations. Use path (default '.'); output is bounded to 50KB/2000 lines. Read a known implementation with cx_definition instead of scanning the whole file.",
+        "promptSnippet": "List source structure before choosing what to read",
+        "promptGuidelines": ["For source navigation, prefer cx_overview to a directory listing when you need code structure, and cx_definition when you need an implementation. Use read for complete text/config files."]
+      },
+      "cx_symbols": {
+        "description": "Find the function, class or method you need to edit. Search code definitions by name, without knowing a filename. Example: name='*Cache*'. Returns names, paths, scopes and locations. Exact names are exact matches; use * for discovery. Requires a filter or kinds=true. Scope matches the complete qualified name; copy a returned scope to disambiguate.",
+        "promptSnippet": "Find functions/classes to edit by name (code search)",
+        "promptGuidelines": ["When an edit request names a function or class, prefer cx_symbols for the initial source lookup, then cx_definition to read its implementation. This replaces the find/grep/read discovery sequence; no repository setup is needed. Use grep for literal text, config or when indexed lookup has no useful match."]
+      },
+      "cx_definition": {
+        "description": "Read actual source code for a function, class or method by name. No filename is required; use from or a returned scope to disambiguate. Returns bounded original source, not a generated summary. Defaults to role=definition. Scope matches complete qualified names; Parent::* selects members.",
+        "promptSnippet": "Read the implementation to edit, directly by symbol name",
+        "promptGuidelines": ["Use cx_definition for a known function/class before reading a whole source file. Pass the lexical name, plus from or scope if ambiguous. If the body is missing or truncated, use read for the remaining source. Keep read/grep for tasks that need raw text rather than code structure."]
+      },
+      "cx_context": {
+        "description": "Find where to implement a change from short task keywords when the file and symbol are unknown. Returns ranked source locations and bounded original excerpts; includeBody=true adds bodies. Use likely code identifiers or English terms. Lexical matching, not semantic search; results and pagination are byte-bounded.",
+        "promptSnippet": "Locate relevant source from task keywords when no symbol is known",
+        "promptGuidelines": ["For an unfamiliar source-edit task without a symbol name, prefer cx_context with a few code-oriented keywords, then cx_definition for promising matches. If no useful match is found, use grep/find/read. Do not query cx for unrelated shell, configuration or prose-only work."]
+      }
+    }
+  },
+  "bilingual": {
+    "kind": "recommended-routing-bilingual",
+    "extends": "compact",
+    "tools": {
+      "cx_symbols": {
+        "promptSnippet": "源码定位 / Find the function or class to edit",
+        "promptGuidelines": ["源码修改的推荐入口：任务已经给出函数、类或方法名时，优先用 cx_symbols 定位，再用 cx_definition 读取实现；通常不必先 ls/find/grep 整个仓库。name 可用 * 通配，存在重名时用返回的 scope 或文件缩小范围。查不到有效源码再用 grep/read；配置、日志、纯文本仍直接使用基础工具。"]
+      },
+      "cx_definition": {
+        "promptSnippet": "读取实现 / Read actual source by function or class name",
+        "promptGuidelines": ["已知符号名时优先用 cx_definition 读取需要修改的函数或类：返回真实源码，不是摘要。name 传短名称，from 可指定文件；scope 采用 cx_symbols 返回的完整限定名。源码未覆盖或被截断时，再用 read 补全；不要为了调用次数重复查询。"]
+      },
+      "cx_context": {
+        "promptSnippet": "定位改动入口 / Find source from task keywords",
+        "promptGuidelines": ["任务没有提供文件或符号名时，优先用 cx_context 搜索可能的代码标识符或英文关键词，再选择 cx_definition 读取具体实现。它是词法检索而非语义搜索；无有效命中时转用 grep/find/read。纯文档或配置修改不需要这一步。"]
+      }
+    }
+  },
+  "priority": {
+    "kind": "explicit-source-navigation-policy-not-natural-adoption",
+    "extends": "compact",
+    "tools": {
+      "cx_symbols": {
+        "promptSnippet": "Source-edit entry point: locate the named function/class",
+        "promptGuidelines": ["Source-edit navigation policy: when the task names a code symbol, make the first source lookup with cx_symbols, then read the needed implementation with cx_definition. For unknown symbols use cx_context. This rule is for locating code, not for shell setup, tests, literal-text/config/prose edits, or files already inspected. If indexed lookup returns no useful match or cannot cover the needed text, fall back to grep/find/read immediately. No repeated calls or minimum call count are required."]
+      },
+      "cx_context": {
+        "promptSnippet": "Source-edit entry point when the symbol or file is unknown",
+        "promptGuidelines": ["For source edits whose location is unknown, begin source discovery with cx_context using likely code identifiers or English keywords; if the task already names the symbol use cx_symbols instead. Follow useful matches with cx_definition. Use grep/find/read when no useful match is available. Skip this workflow for pure documentation/configuration tasks; do not call tools merely to satisfy a quota."]
+      }
+    }
+  }
+}
