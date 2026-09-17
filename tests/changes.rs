@@ -30,6 +30,8 @@ fn git(root: &std::path::Path, args: &[&str]) -> String {
 fn project() -> tempfile::TempDir {
     let p = tempfile::tempdir().unwrap();
     git(p.path(), &["init", "-q"]);
+    // These tests compare raw Git blobs with working bytes, including CRLF.
+    git(p.path(), &["config", "core.autocrlf", "false"]);
     fs::write(
         p.path().join("a.rs"),
         "fn leaf() { let x = 1; }\nfn entry() { leaf(); }\nfn untouched() {}\n",
@@ -167,7 +169,14 @@ fn unsafe_refs_non_git_and_unborn_head_are_failures_not_clean_reports() {
 #[test]
 fn nul_protocol_paths_and_non_source_changes_are_preserved() {
     let p = project();
-    for file in ["space name.rs", "line\nbreak.rs", "-dash.rs"] {
+    // Windows forbids control characters in file names; retain the newline
+    // oracle on Unix and exercise a legal non-ASCII path on Windows.
+    let unusual = if cfg!(windows) {
+        "unicode-é.rs"
+    } else {
+        "line\nbreak.rs"
+    };
+    for file in ["space name.rs", unusual, "-dash.rs"] {
         fs::write(p.path().join(file), "fn added() {}\n").unwrap();
     }
     fs::write(p.path().join("binary.dat"), b"\0binary\xff").unwrap();
@@ -181,10 +190,9 @@ fn nul_protocol_paths_and_non_source_changes_are_preserved() {
         .map(|r| r["file"].as_str().unwrap().to_string())
         .collect();
     files.sort();
-    assert_eq!(
-        files,
-        vec!["-dash.rs", "binary.dat", "line\nbreak.rs", "space name.rs"]
-    );
+    let mut expected = vec!["-dash.rs", "binary.dat", unusual, "space name.rs"];
+    expected.sort();
+    assert_eq!(files, expected);
     assert_eq!(
         out.results()
             .iter()
