@@ -20,8 +20,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    env:
-      CX_CACHE_DIR: ${{ runner.temp }}/cx-cache
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -30,10 +28,13 @@ jobs:
         run: >-
           cargo run -- lang add html markdown rust typescript python go c objc cpp
           java ruby lua zig bash solidity elixir swift dart
+        env:
+          CX_CACHE_DIR: ${{ runner.temp }}/cx-cache
       - name: Prepare explicit grammar loader directory
-        run: node scripts/prepare-ci-grammars.mjs "${{ env.CX_CACHE_DIR }}/grammars" "${{ runner.temp }}/cx-test-grammars"
+        run: node scripts/prepare-ci-grammars.mjs "${{ runner.temp }}/cx-cache/grammars" "${{ runner.temp }}/cx-test-grammars"
       - run: cargo test --locked
         env:
+          CX_CACHE_DIR: ${{ runner.temp }}/cx-cache
           TREE_SITTER_LANGUAGE_PACK_LIBS_DIR: ${{ runner.temp }}/cx-test-grammars
 
   clippy:
